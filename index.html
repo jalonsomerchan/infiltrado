@@ -68,11 +68,33 @@
         <div id="config-container" class="hidden space-y-4 pt-4 border-t border-gray-800">
             <h3 class="text-center font-bold text-gray-500 uppercase text-sm tracking-widest">Configuración de partida</h3>
             <div class="bg-gray-900 p-4 rounded-2xl space-y-4">
+                <div class="space-y-2">
+                    <div class="flex justify-between items-center">
+                        <span class="font-bold">Modo</span>
+                        <select id="config-mode" class="bg-gray-800 rounded-lg p-2 outline-none">
+                            <option value="classic">Clásico</option>
+                            <option value="blind">Infiltrado ciego</option>
+                            <option value="double">Doble infiltrado</option>
+                            <option value="chaos">Caos</option>
+                            <option value="timed">Contrarreloj</option>
+                        </select>
+                    </div>
+                    <p id="mode-description" class="text-xs text-gray-400 leading-relaxed">Un infiltrado recibe una palabra similar y el resto recibe la palabra civil.</p>
+                </div>
                 <div class="flex justify-between items-center">
                     <span class="font-bold">Infiltrado recibe</span>
                     <select id="config-infiltrado-word" class="bg-gray-800 rounded-lg p-2 outline-none">
                         <option value="similar">Palabra Similar</option>
                         <option value="none">Nada (En blanco)</option>
+                    </select>
+                </div>
+                <div id="timer-config" class="hidden flex justify-between items-center">
+                    <span class="font-bold">Tiempo</span>
+                    <select id="config-timer" class="bg-gray-800 rounded-lg p-2 outline-none">
+                        <option value="20">20 segundos</option>
+                        <option value="30" selected>30 segundos</option>
+                        <option value="45">45 segundos</option>
+                        <option value="60">60 segundos</option>
                     </select>
                 </div>
                 <div class="flex justify-between items-center">
@@ -130,6 +152,8 @@
         </div>
       </div>
 
+      <div id="mode-summary" class="w-full bg-brand/10 border border-brand/30 rounded-2xl p-4 text-sm text-gray-300 hidden"></div>
+
       <div class="w-full flex-1 overflow-y-auto space-y-3 py-4" id="players-list">
         <!-- Players items -->
       </div>
@@ -147,7 +171,11 @@
     <!-- Game Screen -->
     <section id="screen-game" class="screen flex-col items-center w-full gap-6">
       <div class="w-full text-center space-y-4">
-        <div id="game-status" class="bg-brand/20 text-brand font-bold px-4 py-1 rounded-full inline-block text-xs tracking-widest uppercase">RONDA 1</div>
+        <div class="flex justify-center gap-2 flex-wrap">
+          <div id="game-status" class="bg-brand/20 text-brand font-bold px-4 py-1 rounded-full inline-block text-xs tracking-widest uppercase">RONDA 1</div>
+          <div id="mode-status" class="bg-gray-900 text-gray-300 font-bold px-4 py-1 rounded-full inline-block text-xs tracking-widest uppercase"></div>
+          <div id="timer-status" class="hidden bg-red-500/20 text-red-300 font-bold px-4 py-1 rounded-full text-xs tracking-widest uppercase"></div>
+        </div>
         <div id="word-container" class="bg-gray-900 border-2 border-brand p-8 rounded-3xl w-full">
           <p id="category-display" class="text-brand text-xs font-black uppercase mb-1 hidden"></p>
           <p class="text-gray-400 text-sm uppercase tracking-widest mb-2 font-bold">Tu palabra es:</p>
