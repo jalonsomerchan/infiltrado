@@ -16,6 +16,7 @@ let socket = null;
 let socketRoomCode = null;
 let reconnectAttempts = 0;
 let manualSocketClose = false;
+let audioContext = null;
 let urlRoomCode = new URLSearchParams(window.location.search).get('room');
 
 const screens = {
@@ -51,17 +52,20 @@ async function init() {
 
 function setupEventListeners() {
   document.getElementById('btn-create-init').onclick = () => {
+    feedback('click');
     if (!validateUser()) return;
     document.getElementById('login-actions').classList.add('hidden');
     document.getElementById('config-container').classList.remove('hidden');
   };
   document.getElementById('btn-join-init').onclick = () => {
+    feedback('click');
     if (!validateUser()) return;
     document.getElementById('login-actions').classList.add('hidden');
     document.getElementById('join-container').classList.remove('hidden');
   };
   document.getElementById('btn-create-confirm').onclick = createRoom;
   document.getElementById('btn-join-confirm').onclick = () => {
+    feedback('click');
     if (!validateUser()) return;
     const code = document.getElementById('join-code').value.trim().toUpperCase();
     if (code) joinRoom(code);
@@ -70,12 +74,16 @@ function setupEventListeners() {
   document.getElementById('btn-show-voting').onclick = goToVoting;
   document.getElementById('btn-back-lobby').onclick = backToLobby;
   document.getElementById('btn-share').onclick = shareRoom;
+  document.getElementById('btn-whatsapp').onclick = shareRoomOnWhatsApp;
+  document.getElementById('btn-copy-code').onclick = copyRoomCode;
+  document.getElementById('btn-copy-link').onclick = copyRoomLink;
 }
 
 function validateUser() {
   const username = document.getElementById('login-username').value.trim();
   if (!username) {
     alert('Pon un nombre');
+    feedback('error');
     return false;
   }
 
@@ -90,8 +98,70 @@ function validateUser() {
 }
 
 function showScreen(screenId) {
-  Object.values(screens).forEach(s => s.classList.remove('active'));
-  screens[screenId].classList.add('active');
+  Object.values(screens).forEach(s => {
+    s.classList.remove('active', 'screen-enter');
+  });
+
+  screens[screenId].classList.add('active', 'screen-enter');
+}
+
+function feedback(type = 'click') {
+  vibrate(type);
+  playSound(type);
+}
+
+function vibrate(type) {
+  if (!navigator.vibrate) return;
+
+  const patterns = {
+    click: 15,
+    vote: [20, 20, 30],
+    reveal: [40, 30, 80],
+    success: [25, 20, 25],
+    error: [80, 30, 80]
+  };
+
+  navigator.vibrate(patterns[type] || patterns.click);
+}
+
+function playSound(type) {
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return;
+
+  audioContext ||= new AudioContext();
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+  const now = audioContext.currentTime;
+
+  const tones = {
+    click: [560, 0.04, 'sine'],
+    vote: [720, 0.08, 'triangle'],
+    reveal: [220, 0.22, 'sawtooth'],
+    success: [880, 0.16, 'sine'],
+    error: [140, 0.16, 'square']
+  };
+  const [frequency, duration, wave] = tones[type] || tones.click;
+
+  oscillator.type = wave;
+  oscillator.frequency.setValueAtTime(frequency, now);
+  if (type === 'success') oscillator.frequency.exponentialRampToValueAtTime(1320, now + duration);
+  if (type === 'reveal') oscillator.frequency.exponentialRampToValueAtTime(90, now + duration);
+
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.08, now + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+  oscillator.connect(gain);
+  gain.connect(audioContext.destination);
+  oscillator.start(now);
+  oscillator.stop(now + duration + 0.02);
+}
+
+function animateElement(element, className) {
+  if (!element) return;
+  element.classList.remove(className);
+  void element.offsetWidth;
+  element.classList.add(className);
 }
 
 function getPlayers() {
@@ -147,7 +217,28 @@ function clearPersistedRoom() {
   window.history.replaceState({}, '', window.location.pathname);
 }
 
+function getRoomUrl() {
+  return `${window.location.origin}${window.location.pathname}?room=${currentRoom.room_code}`;
+}
+
+function getShareText() {
+  return `Únete a mi partida de Infiltrado 🔥 Código: ${currentRoom.room_code} ${getRoomUrl()}`;
+}
+
+function updateSharePanel() {
+  if (!currentRoom?.room_code) return;
+
+  const roomUrl = getRoomUrl();
+  const qr = document.getElementById('room-qr');
+  const linkDisplay = document.getElementById('room-link-display');
+
+  qr.src = `https://api.qrserver.com/v1/create-qr-code/?size=192x192&data=${encodeURIComponent(roomUrl)}`;
+  linkDisplay.innerText = roomUrl;
+}
+
 async function createRoom() {
+  feedback('click');
+
   const settings = {
     infiltradoMode: document.getElementById('config-infiltrado-word').value,
     showCategory: document.getElementById('config-show-category').value,
@@ -164,9 +255,11 @@ async function createRoom() {
     persistRoom(res.room_code);
     initSocket(res.room_code);
     renderLobby();
+    feedback('success');
     showScreen('lobby');
   } catch (e) {
     console.error(e);
+    feedback('error');
     alert('No se pudo crear la sala');
   }
 }
@@ -176,6 +269,7 @@ async function joinRoom(code, { silent = false } = {}) {
     const room = await api.getRoom(code);
 
     if (hasDuplicatedName(room.game_state?.players || [], currentUser.username)) {
+      feedback('error');
       alert('Ya hay un jugador con ese nombre en la sala');
       showScreen('login');
       return;
@@ -187,10 +281,12 @@ async function joinRoom(code, { silent = false } = {}) {
 
     persistRoom(code);
     initSocket(code);
+    feedback('success');
     updateUIFromState();
   } catch (e) {
     console.error(e);
     clearPersistedRoom();
+    feedback('error');
     if (!silent) alert('No se pudo entrar en la sala');
     showScreen('login');
   }
@@ -252,6 +348,8 @@ function updateUIFromState() {
 
 function renderLobby() {
   document.getElementById('room-code-display').innerText = currentRoom.room_code;
+  updateSharePanel();
+
   const list = document.getElementById('players-list');
   list.innerHTML = '';
   getPlayers().forEach(p => {
@@ -283,6 +381,7 @@ function renderGame() {
 
   document.getElementById('player-word').innerText = myData.eliminated ? 'ELIMINADO' : (myData.word || '???');
   document.getElementById('game-status').innerText = `RONDA ${state.round || 1}`;
+  animateElement(document.getElementById('word-container'), 'glow-pulse');
 
   const turnList = document.getElementById('turn-list');
   turnList.innerHTML = '';
@@ -321,7 +420,7 @@ function renderVoting() {
         btn.querySelector('span').innerText = p.name;
         btn.querySelector('.w-16').innerText = p.name[0].toUpperCase();
         if (myData.eliminated) btn.classList.add('pointer-events-none', 'opacity-50');
-        else btn.onclick = () => castVote(p.id);
+        else btn.onclick = () => castVote(p.id, btn);
 
         if (currentRoom.game_state.votes && currentRoom.game_state.votes[currentUser.id] == p.id) btn.classList.add('selected');
         grid.appendChild(el);
@@ -334,6 +433,9 @@ function renderResults() {
     resultsList.innerHTML = '';
     const infiltrado = state.players.find(p => p.isInfiltrado);
     document.getElementById('results-winner').innerText = state.winner === 'infiltrado' ? '¡GANA EL INFILTRADO!' : '¡CIVILES GANAN!';
+    animateElement(document.getElementById('results-winner'), 'glow-pulse');
+    feedback('reveal');
+
     const info = document.createElement('p');
     info.className = 'text-center text-gray-400 mb-4';
     info.innerText = infiltrado
@@ -350,14 +452,17 @@ function renderResults() {
 }
 
 async function startGame() {
+    feedback('click');
     const players = getPlayers();
 
     if (currentRoom.host_id != currentUser.id) {
+      feedback('error');
       alert('Solo el host puede comenzar la partida');
       return;
     }
 
     if (players.length < MIN_PLAYERS) {
+      feedback('error');
       alert(`Se necesitan al menos ${MIN_PLAYERS} jugadores`);
       return;
     }
@@ -383,7 +488,10 @@ async function startGame() {
 }
 
 async function goToVoting() {
+    feedback('click');
+
     if (currentRoom.host_id != currentUser.id) {
+      feedback('error');
       alert('Solo el host puede iniciar la votación');
       return;
     }
@@ -391,8 +499,11 @@ async function goToVoting() {
     await api.updateRoomState(currentRoom.room_code, { status: 'voting', gameState: { ...currentRoom.game_state, votes: {} } });
 }
 
-async function castVote(targetId) {
+async function castVote(targetId, button) {
     if (currentRoom.game_state.votes && currentRoom.game_state.votes[currentUser.id]) return;
+    feedback('vote');
+    button?.classList.add('selected');
+
     const votes = { ...currentRoom.game_state.votes, [currentUser.id]: targetId };
     const voters = currentRoom.game_state.players.filter(p => !p.eliminated); // Solo votan los vivos
 
@@ -432,7 +543,10 @@ async function castVote(targetId) {
 }
 
 async function backToLobby() {
+    feedback('click');
+
     if (currentRoom.host_id != currentUser.id) {
+      feedback('error');
       alert('Solo el host puede volver al lobby');
       return;
     }
@@ -441,9 +555,27 @@ async function backToLobby() {
 }
 
 function shareRoom() {
-    const url = window.location.href;
-    if (navigator.share) navigator.share({ title: 'Infiltrado', url });
-    else { navigator.clipboard.writeText(url); alert('Copiado'); }
+    feedback('click');
+    const url = getRoomUrl();
+    if (navigator.share) navigator.share({ title: 'Infiltrado', text: getShareText(), url });
+    else copyRoomLink();
+}
+
+function shareRoomOnWhatsApp() {
+  feedback('click');
+  window.open(`https://wa.me/?text=${encodeURIComponent(getShareText())}`, '_blank', 'noopener,noreferrer');
+}
+
+async function copyRoomCode() {
+  await navigator.clipboard.writeText(currentRoom.room_code);
+  feedback('success');
+  alert('Código copiado');
+}
+
+async function copyRoomLink() {
+  await navigator.clipboard.writeText(getRoomUrl());
+  feedback('success');
+  alert('Enlace copiado');
 }
 
 init();
