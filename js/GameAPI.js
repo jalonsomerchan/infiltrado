@@ -1,7 +1,7 @@
 /**
  * Librería para interactuar con la API de juegos de alon.one
  */
-class GameAPI {
+export default class GameAPI {
   constructor(baseURL = 'https://alon.one/juegos/api') {
     this.baseURL = baseURL.replace(/\/$/, ''); // Limpiar slash final si existe
   }
@@ -100,6 +100,3 @@ class GameAPI {
     });
   }
 }
-
-// Exportar para uso en módulos o adjuntar al window
-// export default GameAPI;
