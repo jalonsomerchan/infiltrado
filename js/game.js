@@ -30,6 +30,7 @@ const screens = {
 };
 
 async function init() {
+  setupExitButtons();
   setupEventListeners();
   updateModeConfigUI();
 
@@ -54,17 +55,61 @@ async function init() {
   showScreen('login');
 }
 
+function setupExitButtons() {
+  addExitButton({
+    parent: document.getElementById('config-container'),
+    id: 'btn-cancel-config',
+    label: 'Cancelar y volver al inicio',
+    onClick: leaveRoomAndGoHome
+  });
+
+  addExitButton({
+    parent: document.getElementById('screen-lobby'),
+    id: 'btn-leave-lobby',
+    label: 'Salir de la sala',
+    onClick: leaveRoomAndGoHome
+  });
+
+  addExitButton({
+    parent: document.getElementById('screen-game'),
+    id: 'btn-leave-game',
+    label: 'Salir de la partida',
+    onClick: () => leaveRoomAndGoHome({ askConfirmation: true })
+  });
+
+  addExitButton({
+    parent: document.getElementById('screen-results'),
+    id: 'btn-leave-results',
+    label: 'Salir al inicio',
+    onClick: leaveRoomAndGoHome
+  });
+}
+
+function addExitButton({ parent, id, label, onClick }) {
+  if (!parent || document.getElementById(id)) return;
+
+  const button = document.createElement('button');
+  button.id = id;
+  button.type = 'button';
+  button.className = 'w-full bg-gray-900 hover:bg-gray-800 border border-gray-800 text-gray-300 rounded-2xl p-3 text-sm font-black uppercase tracking-widest transition-all';
+  button.innerText = label;
+  button.onclick = onClick;
+  parent.appendChild(button);
+}
+
 function setupEventListeners() {
   document.getElementById('btn-create-init').onclick = () => {
     feedback('click');
     if (!validateUser()) return;
     document.getElementById('login-actions').classList.add('hidden');
+    document.getElementById('join-container').classList.add('hidden');
     document.getElementById('config-container').classList.remove('hidden');
   };
   document.getElementById('btn-join-init').onclick = () => {
     feedback('click');
     if (!validateUser()) return;
     document.getElementById('login-actions').classList.add('hidden');
+    document.getElementById('config-container').classList.add('hidden');
     document.getElementById('join-container').classList.remove('hidden');
   };
   document.getElementById('config-mode').onchange = updateModeConfigUI;
@@ -120,6 +165,39 @@ function showScreen(screenId) {
 
   if (screenId !== 'game') stopTimer();
   screens[screenId].classList.add('active', 'screen-enter');
+}
+
+function resetHomeUI() {
+  document.getElementById('login-actions').classList.remove('hidden');
+  document.getElementById('join-container').classList.add('hidden');
+  document.getElementById('config-container').classList.add('hidden');
+  document.getElementById('join-code').value = '';
+
+  if (currentUser) {
+    document.getElementById('login-username').value = currentUser.username;
+  }
+}
+
+function leaveRoomAndGoHome({ askConfirmation = false } = {}) {
+  if (askConfirmation && !confirm('¿Seguro que quieres salir de la partida?')) return;
+
+  feedback('click');
+  closeSocket();
+  stopTimer();
+  clearPersistedRoom();
+  currentRoom = null;
+  socketRoomCode = null;
+  reconnectAttempts = 0;
+  urlRoomCode = null;
+  resetHomeUI();
+  showScreen('login');
+}
+
+function closeSocket() {
+  manualSocketClose = true;
+  if (socket?.close) socket.close();
+  socket = null;
+  manualSocketClose = false;
 }
 
 function feedback(type = 'click') {
@@ -330,15 +408,14 @@ async function refreshRoom() {
 }
 
 function initSocket(code) {
-  manualSocketClose = true;
-  if (socket?.close) socket.close();
+  closeSocket();
 
-  manualSocketClose = false;
   socketRoomCode = code;
   socket = connect(`wss://alon.one/juegos/api/ws/rooms/${code}`);
 
   socket.on('player_joined', refreshRoom);
   socket.on('state_updated', (data) => {
+    if (!currentRoom) return;
     currentRoom.game_state = data.game_state;
     currentRoom.status = data.status;
     updateUIFromState();
