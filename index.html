@@ -26,6 +26,10 @@
     .pop { animation: pop .35s ease forwards; }
     @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-6px)} 75%{transform:translateX(6px)} }
     .shake { animation: shake .3s ease; }
+    @keyframes screenEnter { 0%{transform:translateY(12px) scale(.98);opacity:0} 100%{transform:translateY(0) scale(1);opacity:1} }
+    .screen-enter { animation: screenEnter .25s ease both; }
+    @keyframes glowPulse { 0%,100%{box-shadow:0 0 0 rgba(124,58,237,0)} 50%{box-shadow:0 0 32px rgba(124,58,237,.45)} }
+    .glow-pulse { animation: glowPulse .7s ease both; }
   </style>
 </head>
 <body class="h-full bg-gray-950 text-white font-game select-none">
@@ -94,12 +98,36 @@
     <!-- Lobby Screen -->
     <section id="screen-lobby" class="screen flex-col items-center w-full gap-6">
       <div class="w-full flex justify-between items-center bg-gray-900/50 p-4 rounded-2xl">
-        <div id="room-code-display" class="text-3xl font-black text-brand tracking-widest">####</div>
-        <button id="btn-share" class="p-2 hover:bg-gray-800 rounded-xl transition-all">
+        <div>
+          <p class="text-[10px] uppercase text-gray-500 font-black tracking-widest">Código de sala</p>
+          <div id="room-code-display" class="text-3xl font-black text-brand tracking-widest">####</div>
+        </div>
+        <button id="btn-share" class="p-2 hover:bg-gray-800 rounded-xl transition-all" aria-label="Compartir sala">
           <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
           </svg>
         </button>
+      </div>
+
+      <div id="share-panel" class="w-full bg-gray-900/60 border border-gray-800 rounded-2xl p-4 space-y-4">
+        <div class="grid grid-cols-[96px_1fr] gap-4 items-center">
+          <img id="room-qr" class="w-24 h-24 rounded-xl bg-white p-2" alt="QR para unirse a la sala" />
+          <div class="space-y-2 min-w-0">
+            <p class="text-xs text-gray-400 leading-relaxed">Invita a otros jugadores con el enlace, WhatsApp o este QR.</p>
+            <p id="room-link-display" class="text-[11px] text-gray-500 truncate"></p>
+          </div>
+        </div>
+        <div class="grid grid-cols-3 gap-2">
+          <button id="btn-whatsapp" class="bg-green-600 hover:bg-green-700 rounded-xl p-3 text-xs font-black uppercase tracking-wider transition-all">
+            WhatsApp
+          </button>
+          <button id="btn-copy-code" class="bg-gray-800 hover:bg-gray-700 rounded-xl p-3 text-xs font-black uppercase tracking-wider transition-all">
+            Código
+          </button>
+          <button id="btn-copy-link" class="bg-gray-800 hover:bg-gray-700 rounded-xl p-3 text-xs font-black uppercase tracking-wider transition-all">
+            Enlace
+          </button>
+        </div>
       </div>
 
       <div class="w-full flex-1 overflow-y-auto space-y-3 py-4" id="players-list">
