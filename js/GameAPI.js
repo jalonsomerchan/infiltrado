@@ -76,8 +76,34 @@ export default class GameAPI {
     return this._request(`rooms/${roomCode}/join`, 'POST', { user_id: userId });
   }
 
+  /**
+   * Envía una acción de juego para que el servidor valide permisos y genere el nuevo estado.
+   *
+   * Endpoint recomendado para cerrar la vulnerabilidad de la issue #8:
+   * el cliente pide "qué quiere hacer" y el backend decide si puede hacerlo.
+   */
+  async sendRoomAction(roomCode, action, actorId, payload = {}, expectedStateVersion = null) {
+    const body = {
+      action,
+      actor_id: actorId,
+      payload
+    };
 
-  /** Actualiza el estado del juego, status o settings de la sala */
+    if (expectedStateVersion !== null) {
+      body.expected_state_version = expectedStateVersion;
+    }
+
+    return this._request(`rooms/${roomCode}/actions`, 'POST', body);
+  }
+
+  /**
+   * @deprecated Evitar usar este método para acciones de juego públicas.
+   *
+   * Este endpoint permite enviar parches completos de estado desde cliente y solo es seguro
+   * si el backend valida permisos, campos permitidos y recalcula ganador/eliminados/puntos.
+   * Para producción, usar sendRoomAction() con acciones como start_game, start_voting,
+   * cast_vote o back_to_lobby.
+   */
   async updateRoomState(roomCode, { gameState, status, roomSettings }) {
     const payload = {};
     if (gameState) payload.game_state = gameState;
