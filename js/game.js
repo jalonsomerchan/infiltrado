@@ -19,6 +19,7 @@ let reconnectAttempts = 0;
 let manualSocketClose = false;
 let audioContext = null;
 let timerInterval = null;
+let timerExpiredNotified = false;
 let urlRoomCode = new URLSearchParams(window.location.search).get('room');
 
 const screens = {
@@ -443,6 +444,7 @@ function renderTimerStatus() {
 
   timerStatus.classList.toggle('hidden', !isTimed);
   stopTimer();
+  timerExpiredNotified = false;
 
   if (!isTimed) return;
 
@@ -450,7 +452,11 @@ function renderTimerStatus() {
     const elapsed = Math.floor((Date.now() - (state.roundStartedAt || Date.now())) / 1000);
     const remaining = Math.max((state.timerSeconds || 30) - elapsed, 0);
     timerStatus.innerText = `${remaining}s`;
-    if (remaining === 0) feedback('reveal');
+
+    if (remaining === 0 && !timerExpiredNotified) {
+      timerExpiredNotified = true;
+      feedback('reveal');
+    }
   };
 
   updateTimer();
