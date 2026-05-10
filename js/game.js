@@ -1,6 +1,7 @@
 import { connect } from 'https://esm.sh/itty-sockets';
 import GameAPI from './GameAPI.js';
 import palabras from './palabras.js';
+import { GAME_MODES, createRoundState, getModeDescription, getModeLabel } from './gameModes.js';
 
 const api = new GameAPI();
 const GAME_ID = 12;
@@ -17,6 +18,7 @@ let socketRoomCode = null;
 let reconnectAttempts = 0;
 let manualSocketClose = false;
 let audioContext = null;
+let timerInterval = null;
 let urlRoomCode = new URLSearchParams(window.location.search).get('room');
 
 const screens = {
@@ -28,6 +30,7 @@ const screens = {
 
 async function init() {
   setupEventListeners();
+  updateModeConfigUI();
 
   const savedRoomCode = localStorage.getItem(ROOM_STORAGE_KEY);
   const initialRoomCode = urlRoomCode || savedRoomCode;
@@ -63,6 +66,7 @@ function setupEventListeners() {
     document.getElementById('login-actions').classList.add('hidden');
     document.getElementById('join-container').classList.remove('hidden');
   };
+  document.getElementById('config-mode').onchange = updateModeConfigUI;
   document.getElementById('btn-create-confirm').onclick = createRoom;
   document.getElementById('btn-join-confirm').onclick = () => {
     feedback('click');
@@ -77,6 +81,17 @@ function setupEventListeners() {
   document.getElementById('btn-whatsapp').onclick = shareRoomOnWhatsApp;
   document.getElementById('btn-copy-code').onclick = copyRoomCode;
   document.getElementById('btn-copy-link').onclick = copyRoomLink;
+}
+
+function updateModeConfigUI() {
+  const mode = document.getElementById('config-mode').value;
+  const modeDescription = document.getElementById('mode-description');
+  const timerConfig = document.getElementById('timer-config');
+  const infiltradoWordConfig = document.getElementById('config-infiltrado-word').closest('.flex');
+
+  modeDescription.innerText = getModeDescription(mode);
+  timerConfig.classList.toggle('hidden', mode !== 'timed');
+  infiltradoWordConfig.classList.toggle('hidden', mode === 'blind' || mode === 'chaos');
 }
 
 function validateUser() {
@@ -102,6 +117,7 @@ function showScreen(screenId) {
     s.classList.remove('active', 'screen-enter');
   });
 
+  if (screenId !== 'game') stopTimer();
   screens[screenId].classList.add('active', 'screen-enter');
 }
 
@@ -236,17 +252,25 @@ function updateSharePanel() {
   linkDisplay.innerText = roomUrl;
 }
 
+function getSelectedRoomSettings() {
+  const mode = document.getElementById('config-mode').value;
+
+  return {
+    mode,
+    modeLabel: getModeLabel(mode),
+    modeDescription: getModeDescription(mode),
+    timerSeconds: parseInt(document.getElementById('config-timer').value, 10) || 30,
+    infiltradoMode: mode === 'blind' ? 'none' : document.getElementById('config-infiltrado-word').value,
+    showCategory: document.getElementById('config-show-category').value,
+    maxRounds: parseInt(document.getElementById('config-rounds').value, 10) || 3
+  };
+}
+
 async function createRoom() {
   feedback('click');
 
-  const settings = {
-    infiltradoMode: document.getElementById('config-infiltrado-word').value,
-    showCategory: document.getElementById('config-show-category').value,
-    maxRounds: parseInt(document.getElementById('config-rounds').value) || 3
-  };
-
   try {
-    const res = await api.createRoom(GAME_ID, currentUser.id, settings, {
+    const res = await api.createRoom(GAME_ID, currentUser.id, getSelectedRoomSettings(), {
       status: 'waiting',
       players: [buildCurrentPlayer({ isHost: true })]
     });
@@ -349,6 +373,7 @@ function updateUIFromState() {
 function renderLobby() {
   document.getElementById('room-code-display').innerText = currentRoom.room_code;
   updateSharePanel();
+  renderModeSummary();
 
   const list = document.getElementById('players-list');
   list.innerHTML = '';
@@ -361,6 +386,16 @@ function renderLobby() {
   const isHost = currentRoom.host_id == currentUser.id;
   document.getElementById('admin-controls').classList.toggle('hidden', !isHost);
   document.getElementById('waiting-message').classList.toggle('hidden', isHost);
+}
+
+function renderModeSummary() {
+  const modeSummary = document.getElementById('mode-summary');
+  const settings = currentRoom.room_settings || {};
+  const mode = settings.mode || 'classic';
+  const timerText = mode === 'timed' ? ` · ${settings.timerSeconds || 30}s por ronda` : '';
+
+  modeSummary.classList.remove('hidden');
+  modeSummary.innerHTML = `<strong>${GAME_MODES[mode]?.label || 'Clásico'}</strong>${timerText}<br><span class="text-gray-400">${getModeDescription(mode)}</span>`;
 }
 
 function renderGame() {
@@ -381,6 +416,8 @@ function renderGame() {
 
   document.getElementById('player-word').innerText = myData.eliminated ? 'ELIMINADO' : (myData.word || '???');
   document.getElementById('game-status').innerText = `RONDA ${state.round || 1}`;
+  document.getElementById('mode-status').innerText = state.modeLabel || getModeLabel(state.mode || 'classic');
+  renderTimerStatus();
   animateElement(document.getElementById('word-container'), 'glow-pulse');
 
   const turnList = document.getElementById('turn-list');
@@ -399,7 +436,35 @@ function renderGame() {
   document.getElementById('btn-show-voting').classList.toggle('hidden', currentRoom.host_id != currentUser.id || myData.eliminated);
 }
 
+function renderTimerStatus() {
+  const timerStatus = document.getElementById('timer-status');
+  const state = currentRoom.game_state;
+  const isTimed = state.mode === 'timed';
+
+  timerStatus.classList.toggle('hidden', !isTimed);
+  stopTimer();
+
+  if (!isTimed) return;
+
+  const updateTimer = () => {
+    const elapsed = Math.floor((Date.now() - (state.roundStartedAt || Date.now())) / 1000);
+    const remaining = Math.max((state.timerSeconds || 30) - elapsed, 0);
+    timerStatus.innerText = `${remaining}s`;
+    if (remaining === 0) feedback('reveal');
+  };
+
+  updateTimer();
+  timerInterval = setInterval(updateTimer, 1000);
+}
+
+function stopTimer() {
+  if (!timerInterval) return;
+  clearInterval(timerInterval);
+  timerInterval = null;
+}
+
 function renderVoting() {
+    stopTimer();
     const myData = currentRoom.game_state.players.find(p => p.id == currentUser.id);
     if (!myData) {
       clearPersistedRoom();
@@ -410,6 +475,8 @@ function renderVoting() {
     document.getElementById('word-container').classList.add('hidden');
     document.getElementById('voting-area').classList.remove('hidden');
     document.getElementById('btn-show-voting').classList.add('hidden');
+    document.getElementById('mode-status').innerText = currentRoom.game_state.modeLabel || getModeLabel(currentRoom.game_state.mode || 'classic');
+    document.getElementById('timer-status').classList.add('hidden');
 
     const grid = document.getElementById('vote-grid');
     grid.innerHTML = '';
@@ -428,18 +495,19 @@ function renderVoting() {
 }
 
 function renderResults() {
+    stopTimer();
     const state = currentRoom.game_state;
     const resultsList = document.getElementById('results-list');
     resultsList.innerHTML = '';
-    const infiltrado = state.players.find(p => p.isInfiltrado);
-    document.getElementById('results-winner').innerText = state.winner === 'infiltrado' ? '¡GANA EL INFILTRADO!' : '¡CIVILES GANAN!';
+    const infiltrados = state.players.filter(p => p.isInfiltrado);
+    document.getElementById('results-winner').innerText = state.winner === 'infiltrado' ? '¡GANAN LOS INFILTRADOS!' : '¡CIVILES GANAN!';
     animateElement(document.getElementById('results-winner'), 'glow-pulse');
     feedback('reveal');
 
     const info = document.createElement('p');
     info.className = 'text-center text-gray-400 mb-4';
-    info.innerText = infiltrado
-      ? `El infiltrado era ${infiltrado.name} con la palabra: ${infiltrado.word || 'NADA'}`
+    info.innerText = infiltrados.length
+      ? `Infiltrado${infiltrados.length > 1 ? 's' : ''}: ${infiltrados.map(p => `${p.name} (${p.word || 'NADA'})`).join(', ')}`
       : 'No se encontró al infiltrado.';
     resultsList.appendChild(info);
 
@@ -467,23 +535,18 @@ async function startGame() {
       return;
     }
 
-    const pair = palabras[Math.floor(Math.random() * palabras.length)];
-    const infiltradoIndex = Math.floor(Math.random() * players.length);
-    const order = players.map(p => p.id).sort(() => Math.random() - 0.5);
+    if ((currentRoom.room_settings?.mode || 'classic') === 'double' && players.length < 6) {
+      feedback('error');
+      alert('El modo doble infiltrado necesita al menos 6 jugadores');
+      return;
+    }
 
-    players.forEach((p, i) => {
-        p.eliminated = false;
-        p.isInfiltrado = (i === infiltradoIndex);
-        if (p.isInfiltrado) {
-            p.word = currentRoom.room_settings.infiltradoMode === 'similar' ? pair.palabras[1] : '';
-        } else {
-            p.word = pair.palabras[0];
-        }
-    });
+    const pair = palabras[Math.floor(Math.random() * palabras.length)];
+    const roundState = createRoundState(players, currentRoom.room_settings, pair, palabras);
 
     await api.updateRoomState(currentRoom.room_code, {
         status: 'playing',
-        gameState: { ...currentRoom.game_state, players, category: pair.categoria, turnOrder: order, round: 1, votes: {}, winner: null }
+        gameState: { ...currentRoom.game_state, ...roundState }
     });
 }
 
@@ -520,17 +583,18 @@ async function castVote(targetId, button) {
 
         let status = 'playing';
         let winner = null;
-        const infiltrado = players.find(p => p.isInfiltrado);
+        const infiltrados = players.filter(p => p.isInfiltrado);
+        const infiltradosAlive = infiltrados.filter(p => !p.eliminated).length;
         const civiliansAlive = players.filter(p => !p.isInfiltrado && !p.eliminated).length;
 
-        if (infiltrado.eliminated) {
+        if (infiltradosAlive === 0) {
             winner = 'civiles';
             status = 'results';
             players.filter(p => !p.isInfiltrado).forEach(p => p.points++);
-        } else if (civiliansAlive <= 1) {
+        } else if (civiliansAlive <= infiltradosAlive) {
             winner = 'infiltrado';
             status = 'results';
-            infiltrado.points += 2;
+            infiltrados.filter(p => !p.eliminated).forEach(p => p.points += 2);
         }
 
         await api.updateRoomState(currentRoom.room_code, {
