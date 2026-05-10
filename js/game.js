@@ -26,6 +26,8 @@ const screens = {
 };
 
 async function init() {
+  setupEventListeners();
+
   const savedRoomCode = localStorage.getItem(ROOM_STORAGE_KEY);
   const initialRoomCode = urlRoomCode || savedRoomCode;
 
@@ -45,7 +47,6 @@ async function init() {
   }
 
   showScreen('login');
-  setupEventListeners();
 }
 
 function setupEventListeners() {
