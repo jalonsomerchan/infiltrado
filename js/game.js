@@ -10,6 +10,7 @@ const USER_STORAGE_KEY = 'infiltrado_user';
 const ROOM_STORAGE_KEY = 'infiltrado_room';
 const SOCKET_RECONNECT_BASE_MS = 1000;
 const SOCKET_RECONNECT_MAX_MS = 10000;
+const HOME_VIEW = 'inicio';
 
 let currentUser = JSON.parse(localStorage.getItem(USER_STORAGE_KEY)) || null;
 let currentRoom = null;
@@ -20,6 +21,7 @@ let manualSocketClose = false;
 let audioContext = null;
 let timerInterval = null;
 let timerExpiredNotified = false;
+let currentView = HOME_VIEW;
 let urlRoomCode = new URLSearchParams(window.location.search).get('room');
 
 const screens = {
@@ -32,35 +34,48 @@ const screens = {
 async function init() {
   setupExitButtons();
   setupEventListeners();
+  setupHistoryNavigation();
   updateModeConfigUI();
 
+  const route = getCurrentRoute();
   const savedRoomCode = localStorage.getItem(ROOM_STORAGE_KEY);
-  const initialRoomCode = urlRoomCode || savedRoomCode;
+  const initialRoomCode = route.roomCode || urlRoomCode || savedRoomCode;
 
-  if (initialRoomCode) {
-    document.getElementById('login-actions').classList.add('hidden');
-    document.getElementById('join-container').classList.remove('hidden');
-    document.getElementById('join-code').value = initialRoomCode;
+  if (currentUser) document.getElementById('login-username').value = currentUser.username;
+
+  if (route.view === 'crear') {
+    showLoginSubscreen('config', { replaceRoute: true });
+    return;
   }
 
-  if (currentUser) {
-    document.getElementById('login-username').value = currentUser.username;
-
-    if (initialRoomCode) {
-      await joinRoom(initialRoomCode, { silent: true });
-      return;
-    }
+  if (route.view === 'unirse') {
+    showLoginSubscreen('join', { replaceRoute: true, roomCode: initialRoomCode });
+    return;
   }
 
+  if (initialRoomCode && currentUser) {
+    await joinRoom(initialRoomCode, { silent: true, replaceRoute: true });
+    return;
+  }
+
+  resetHomeUI();
+  setRoute(HOME_VIEW, { replace: true });
   showScreen('login');
 }
 
 function setupExitButtons() {
   addExitButton({
+    parent: document.getElementById('join-container'),
+    id: 'btn-back-from-join',
+    label: 'Volver al inicio',
+    onClick: goHome
+  });
+
+  addExitButton({
     parent: document.getElementById('config-container'),
     id: 'btn-cancel-config',
-    label: 'Cancelar y volver al inicio',
-    onClick: leaveRoomAndGoHome
+    label: 'Volver al inicio',
+    onClick: goHome
   });
 
   addExitButton({
@@ -101,16 +116,12 @@ function setupEventListeners() {
   document.getElementById('btn-create-init').onclick = () => {
     feedback('click');
     if (!validateUser()) return;
-    document.getElementById('login-actions').classList.add('hidden');
-    document.getElementById('join-container').classList.add('hidden');
-    document.getElementById('config-container').classList.remove('hidden');
+    showLoginSubscreen('config');
   };
   document.getElementById('btn-join-init').onclick = () => {
     feedback('click');
     if (!validateUser()) return;
-    document.getElementById('login-actions').classList.add('hidden');
-    document.getElementById('config-container').classList.add('hidden');
-    document.getElementById('join-container').classList.remove('hidden');
+    showLoginSubscreen('join');
   };
   document.getElementById('config-mode').onchange = updateModeConfigUI;
   document.getElementById('btn-create-confirm').onclick = createRoom;
@@ -127,6 +138,95 @@ function setupEventListeners() {
   document.getElementById('btn-whatsapp').onclick = shareRoomOnWhatsApp;
   document.getElementById('btn-copy-code').onclick = copyRoomCode;
   document.getElementById('btn-copy-link').onclick = copyRoomLink;
+}
+
+function setupHistoryNavigation() {
+  window.addEventListener('popstate', () => handleRouteChange(getCurrentRoute()));
+}
+
+function getCurrentRoute() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    view: params.get('view') || (params.get('room') ? 'unirse' : HOME_VIEW),
+    roomCode: params.get('room')
+  };
+}
+
+function setRoute(view, { roomCode = currentRoom?.room_code, replace = false } = {}) {
+  currentView = view;
+  const params = new URLSearchParams();
+
+  if (roomCode && view !== HOME_VIEW && view !== 'crear') params.set('room', roomCode);
+  if (view !== HOME_VIEW) params.set('view', view);
+
+  const query = params.toString();
+  const url = query ? `${window.location.pathname}?${query}` : window.location.pathname;
+  const method = replace ? 'replaceState' : 'pushState';
+
+  if (`${window.location.pathname}${window.location.search}` !== url) {
+    window.history[method]({ view, roomCode }, '', url);
+  } else if (replace) {
+    window.history.replaceState({ view, roomCode }, '', url);
+  }
+}
+
+async function handleRouteChange({ view, roomCode }) {
+  currentView = view;
+
+  if (view === HOME_VIEW) {
+    leaveRoomAndGoHome({ skipRoute: true });
+    return;
+  }
+
+  if (view === 'crear') {
+    closeSocket();
+    currentRoom = null;
+    showLoginSubscreen('config', { skipRoute: true });
+    return;
+  }
+
+  if (view === 'unirse') {
+    closeSocket();
+    currentRoom = null;
+    showLoginSubscreen('join', { skipRoute: true, roomCode });
+    return;
+  }
+
+  if (roomCode && (!currentRoom || currentRoom.room_code !== roomCode)) {
+    if (currentUser) await joinRoom(roomCode, { silent: true, replaceRoute: true });
+    else showLoginSubscreen('join', { skipRoute: true, roomCode });
+    return;
+  }
+
+  if (!currentRoom) {
+    goHome({ skipRoute: true });
+    return;
+  }
+
+  if (view === 'sala') { renderLobby(); showScreen('lobby'); return; }
+  if (view === 'partida') { renderGame(); showScreen('game'); return; }
+  if (view === 'votacion') { renderVoting(); showScreen('game'); return; }
+  if (view === 'resultados') { renderResults(); showScreen('results'); return; }
+
+  goHome({ skipRoute: true });
+}
+
+function routeForStatus(status) {
+  if (status === 'waiting') return 'sala';
+  if (status === 'playing') return 'partida';
+  if (status === 'voting') return 'votacion';
+  if (status === 'results') return 'resultados';
+  return HOME_VIEW;
+}
+
+function showLoginSubscreen(type, { replaceRoute = false, skipRoute = false, roomCode = '' } = {}) {
+  document.getElementById('login-actions').classList.add('hidden');
+  document.getElementById('config-container').classList.toggle('hidden', type !== 'config');
+  document.getElementById('join-container').classList.toggle('hidden', type !== 'join');
+
+  if (type === 'join') document.getElementById('join-code').value = roomCode || '';
+  if (!skipRoute) setRoute(type === 'config' ? 'crear' : 'unirse', { roomCode, replace: replaceRoute });
+  showScreen('login');
 }
 
 function updateModeConfigUI() {
@@ -178,7 +278,20 @@ function resetHomeUI() {
   }
 }
 
-function leaveRoomAndGoHome({ askConfirmation = false } = {}) {
+function goHome({ skipRoute = false } = {}) {
+  feedback('click');
+  closeSocket();
+  stopTimer();
+  currentRoom = null;
+  socketRoomCode = null;
+  reconnectAttempts = 0;
+  urlRoomCode = null;
+  resetHomeUI();
+  if (!skipRoute) setRoute(HOME_VIEW);
+  showScreen('login');
+}
+
+function leaveRoomAndGoHome({ askConfirmation = false, skipRoute = false } = {}) {
   if (askConfirmation && !confirm('¿Seguro que quieres salir de la partida?')) return;
 
   feedback('click');
@@ -190,6 +303,7 @@ function leaveRoomAndGoHome({ askConfirmation = false } = {}) {
   reconnectAttempts = 0;
   urlRoomCode = null;
   resetHomeUI();
+  if (!skipRoute) setRoute(HOME_VIEW);
   showScreen('login');
 }
 
@@ -304,16 +418,14 @@ async function ensureCurrentPlayerInRoom() {
 
 function persistRoom(roomCode) {
   localStorage.setItem(ROOM_STORAGE_KEY, roomCode);
-  window.history.replaceState({}, '', `?room=${roomCode}`);
 }
 
 function clearPersistedRoom() {
   localStorage.removeItem(ROOM_STORAGE_KEY);
-  window.history.replaceState({}, '', window.location.pathname);
 }
 
 function getRoomUrl() {
-  return `${window.location.origin}${window.location.pathname}?room=${currentRoom.room_code}`;
+  return `${window.location.origin}${window.location.pathname}?room=${currentRoom.room_code}&view=unirse`;
 }
 
 function getShareText() {
@@ -359,6 +471,7 @@ async function createRoom() {
     initSocket(res.room_code);
     renderLobby();
     feedback('success');
+    setRoute('sala', { roomCode: res.room_code });
     showScreen('lobby');
   } catch (e) {
     console.error(e);
@@ -367,14 +480,14 @@ async function createRoom() {
   }
 }
 
-async function joinRoom(code, { silent = false } = {}) {
+async function joinRoom(code, { silent = false, replaceRoute = false } = {}) {
   try {
     const room = await api.getRoom(code);
 
     if (hasDuplicatedName(room.game_state?.players || [], currentUser.username)) {
       feedback('error');
       alert('Ya hay un jugador con ese nombre en la sala');
-      showScreen('login');
+      showLoginSubscreen('join', { roomCode: code, replaceRoute: true });
       return;
     }
 
@@ -385,13 +498,14 @@ async function joinRoom(code, { silent = false } = {}) {
     persistRoom(code);
     initSocket(code);
     feedback('success');
-    updateUIFromState();
+    setRoute(routeForStatus(currentRoom.status), { roomCode: code, replace: replaceRoute });
+    updateUIFromState({ skipRoute: true });
   } catch (e) {
     console.error(e);
     clearPersistedRoom();
     feedback('error');
     if (!silent) alert('No se pudo entrar en la sala');
-    showScreen('login');
+    showLoginSubscreen('join', { roomCode: code, replaceRoute: true });
   }
 }
 
@@ -440,8 +554,10 @@ function reconnectSocket(code) {
   }, delay);
 }
 
-function updateUIFromState() {
+function updateUIFromState({ skipRoute = false } = {}) {
   const status = currentRoom.status;
+  if (!skipRoute) setRoute(routeForStatus(status), { roomCode: currentRoom.room_code });
+
   if (status === 'waiting') { renderLobby(); showScreen('lobby'); }
   else if (status === 'playing') { renderGame(); showScreen('game'); }
   else if (status === 'voting') { renderVoting(); showScreen('game'); }
