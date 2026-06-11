@@ -29,6 +29,8 @@ let timerInterval = null;
 let timerExpiredNotified = false;
 let lastEliminationNoticeKey = '';
 let lastTurnNoticeKey = '';
+let lastOutcomeNoticeKey = '';
+let hostExitInProgress = false;
 let currentView = HOME_VIEW;
 let urlRoomCode = new URLSearchParams(window.location.search).get('room');
 
@@ -276,10 +278,32 @@ function goHome({ skipRoute = false } = {}) {
   showScreen('login');
 }
 
-function leaveRoomAndGoHome({ askConfirmation = false, skipRoute = false } = {}) {
+async function leaveRoomAndGoHome({ askConfirmation = false, skipRoute = false } = {}) {
   if (askConfirmation && !confirm('¿Seguro que quieres salir de la partida?')) return;
 
   feedback('click');
+  const shouldCloseRoomForEveryone = isCurrentUserHost() && currentRoom?.room_code && !hostExitInProgress;
+
+  if (shouldCloseRoomForEveryone) {
+    hostExitInProgress = true;
+    emitSocketEvent('room_closed', { room_code: currentRoom.room_code });
+    try {
+      await patchRoomState({
+        status: 'closed',
+        gameState: {
+          ...(currentRoom.game_state || {}),
+          status: 'closed',
+          closedByHost: true,
+          closedAt: Date.now()
+        }
+      });
+    } catch (error) {
+      console.error('No se pudo cerrar la sala al salir el admin', error);
+      emitSocketEvent('room_closed', { room_code: currentRoom.room_code });
+    }
+  }
+
+  hostExitInProgress = false;
   closeSocket();
   stopTimer();
   clearPersistedRoom();
@@ -739,6 +763,11 @@ function handleSocketMessage(message, sessionId) {
     return;
   }
 
+  if (data.type === 'room_closed') {
+    handleRoomClosed();
+    return;
+  }
+
   if (data.type === 'player_joined' || data.type === 'room_changed' || data.type === 'state_changed') {
     refreshRoom({ forceRender: true });
   }
@@ -837,11 +866,29 @@ function updateUIFromState({ skipRoute = false } = {}) {
   lastRenderedRoomSignature = getRoomSignature(currentRoom);
   if (!skipRoute) setRoute(routeForStatus(status), { roomCode: currentRoom.room_code });
 
-  if (status === 'waiting') { renderLobby(); showScreen('lobby'); }
+  if (status === 'closed') { handleRoomClosed(); }
+  else if (status === 'waiting') { renderLobby(); showScreen('lobby'); }
   else if (status === 'playing') { renderGame(); showScreen('game'); }
   else if (status === 'voting') { renderVoting(); showScreen('game'); }
   else if (status === 'round_results') { renderRoundResults(); showScreen('game'); }
   else if (status === 'results') { renderResults(); showScreen('results'); }
+}
+
+function handleRoomClosed() {
+  const wasInRoom = Boolean(currentRoom?.room_code);
+  closeSocket();
+  stopTimer();
+  clearPersistedRoom();
+  currentRoom = null;
+  reconnectAttempts = 0;
+  urlRoomCode = null;
+  resetHomeUI();
+  setRoute(HOME_VIEW, { replace: true });
+  showScreen('login');
+  if (wasInRoom && !hostExitInProgress) {
+    feedback('error');
+    alert('El administrador ha salido. La partida se ha cerrado para todos.');
+  }
 }
 
 function renderLobby() {
@@ -944,7 +991,10 @@ function renderRoleStatus(myData) {
 
   roleStatus.classList.remove('hidden', 'bg-blue-500/20', 'text-blue-200', 'border-blue-400/50', 'bg-red-500/20', 'text-red-200', 'border-red-400/50');
 
-  if ((currentRoom?.room_settings?.mode || currentRoom?.game_state?.mode) === 'blind') {
+  const hiddenRoleModes = new Set(['blind', 'chaos']);
+  const currentMode = currentRoom?.room_settings?.mode || currentRoom?.game_state?.mode;
+
+  if (hiddenRoleModes.has(currentMode)) {
     roleStatus.innerText = '';
     roleStatus.classList.add('hidden');
     return;
@@ -963,6 +1013,7 @@ function renderRoleStatus(myData) {
 
 function renderCurrentTurn(state) {
   const card = document.getElementById('current-turn-card');
+  const labelEl = document.getElementById('current-turn-label');
   const nameEl = document.getElementById('current-turn-name');
   const hintEl = document.getElementById('current-turn-hint');
   if (!card || !nameEl || !hintEl) return;
@@ -976,9 +1027,10 @@ function renderCurrentTurn(state) {
   const isMe = currentTurn.player.id == currentUser.id;
   card.classList.remove('hidden', 'my-turn', 'other-turn');
   card.classList.add(isMe ? 'my-turn' : 'other-turn');
-  nameEl.innerText = currentTurn.player.name;
+  if (labelEl) labelEl.innerText = isMe ? 'Turno de palabra' : 'Ahora le toca a';
+  nameEl.innerText = isMe ? 'TE TOCA' : currentTurn.player.name;
   hintEl.innerText = isMe
-    ? 'Te toca hablar. Describe sin decir tu palabra.'
+    ? 'Habla ahora. Describe sin decir tu palabra.'
     : `Escucha a ${currentTurn.player.name} y busca contradicciones.`;
 
   const turnInfo = document.getElementById('turn-info');
@@ -996,6 +1048,8 @@ function renderCurrentTurn(state) {
 function clearCurrentTurn() {
   const card = document.getElementById('current-turn-card');
   if (card) card.classList.add('hidden');
+  const label = document.getElementById('current-turn-label');
+  if (label) label.innerText = 'Ahora le toca a';
   const info = document.getElementById('turn-info');
   if (info) info.innerText = 'Vota cuando tengas claro quién no encaja.';
 }
@@ -1357,15 +1411,58 @@ function showTurnNotice() {
   setTimeout(() => overlay.classList.add('hidden'), 1800);
 }
 
+function didCurrentUserWin(state, myData = state?.players?.find(p => p.id == currentUser?.id)) {
+  if (!state?.winner || !myData) return false;
+  if (state.winner === 'infiltrado') return Boolean(myData.isInfiltrado);
+  if (state.winner === 'civiles') return !myData.isInfiltrado;
+  return false;
+}
+
+function maybeShowOutcomeNotice(state, didWin) {
+  const key = `${state.matchNumber || 1}:${state.winner}:${didWin ? 'win' : 'lose'}`;
+  if (lastOutcomeNoticeKey === key) return;
+  lastOutcomeNoticeKey = key;
+  showOutcomeNotice(didWin, state);
+}
+
+function showOutcomeNotice(didWin, state) {
+  const overlay = document.getElementById('event-overlay');
+  const title = document.getElementById('event-overlay-title');
+  const subtitle = document.getElementById('event-overlay-subtitle');
+  if (!overlay || !title || !subtitle) return;
+
+  title.innerText = didWin ? '¡GANASTE!' : 'PERDISTE';
+  title.classList.toggle('text-emerald-300', didWin);
+  title.classList.toggle('text-red-300', !didWin);
+  subtitle.innerText = state.winner === 'infiltrado'
+    ? 'Los infiltrados han sobrevivido hasta dominar la partida.'
+    : 'Los civiles han capturado a todos los infiltrados.';
+
+  overlay.classList.remove('hidden', 'captured-event', 'eliminated-event');
+  overlay.classList.add(didWin ? 'captured-event' : 'eliminated-event');
+  feedback(didWin ? 'success' : 'reveal');
+
+  setTimeout(() => {
+    overlay.classList.add('hidden');
+    overlay.classList.remove('captured-event', 'eliminated-event');
+  }, 2600);
+}
+
 function renderResults() {
   stopTimer();
   const state = currentRoom.game_state;
   const resultsList = document.getElementById('results-list');
   resultsList.innerHTML = '';
   const infiltrados = state.players.filter(p => p.isInfiltrado);
-  document.getElementById('results-winner').innerText = state.winner === 'infiltrado' ? '¡GANAN LOS INFILTRADOS!' : '¡CIVILES GANAN!';
-  animateElement(document.getElementById('results-winner'), 'glow-pulse');
-  feedback('reveal');
+  const myData = state.players.find(p => p.id == currentUser.id);
+  const didWin = didCurrentUserWin(state, myData);
+  const winnerEl = document.getElementById('results-winner');
+  winnerEl.innerHTML = `
+    <div class="${didWin ? 'text-emerald-300' : 'text-red-300'} text-4xl font-black italic tracking-tighter mb-2">${didWin ? '¡GANASTE!' : 'PERDISTE'}</div>
+    <div class="text-sm text-gray-400 font-black uppercase tracking-widest">${state.winner === 'infiltrado' ? 'Ganan los infiltrados' : 'Ganan los civiles'}</div>
+  `;
+  animateElement(winnerEl, 'glow-pulse');
+  maybeShowOutcomeNotice(state, didWin);
 
   const continueButton = document.getElementById('btn-back-lobby');
   const isHost = isCurrentUserHost();
