@@ -8,24 +8,14 @@ export default class GameAPI {
 
   /**
    * Helper privado para peticiones HTTP.
-   *
-   * IMPORTANTE:
-   * No añadir headers anti-cache personalizados aquí.
-   * Headers como X-Requested-With, Cache-Control o Pragma disparan preflight CORS
-   * y rompen POST/PATCH si la API no responde OPTIONS.
+   * No añade query params ni headers anti-cache porque el backend no los soporta bien.
    */
   async _request(endpoint, method = 'GET', data = null) {
     const normalizedMethod = method.toUpperCase();
-    const isGet = normalizedMethod === 'GET';
-    const cacheBuster = isGet ? `${endpoint.includes('?') ? '&' : '?'}_=${Date.now()}` : '';
-    const url = `${this.baseURL}/${endpoint}${cacheBuster}`;
+    const url = `${this.baseURL}/${endpoint}`;
     const options = {
       method: normalizedMethod
     };
-
-    if (isGet) {
-      options.cache = 'no-store';
-    }
 
     if (data !== null && data !== undefined) {
       options.headers = {
