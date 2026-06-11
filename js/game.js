@@ -27,6 +27,7 @@ let voteSubmitting = false;
 let audioContext = null;
 let timerInterval = null;
 let timerExpiredNotified = false;
+let lastEliminationNoticeKey = '';
 let currentView = HOME_VIEW;
 let urlRoomCode = new URLSearchParams(window.location.search).get('room');
 
@@ -109,7 +110,7 @@ function setupEventListeners() {
     if (code) joinRoom(code);
   };
   document.getElementById('btn-start').onclick = startGame;
-  document.getElementById('btn-show-voting').onclick = goToVoting;
+  document.getElementById('btn-show-voting').onclick = advanceTurn;
   document.getElementById('btn-back-lobby').onclick = continueGame;
   document.getElementById('btn-share').onclick = shareRoom;
   document.getElementById('btn-whatsapp').onclick = shareRoomOnWhatsApp;
@@ -835,10 +836,9 @@ function renderModeSummary() {
   const settings = currentRoom.room_settings || {};
   const mode = settings.mode || 'classic';
   const timerText = mode === 'timed' ? ` · ${settings.timerSeconds || 30}s por ronda` : '';
-  const roundsText = ` · ${Number(settings.maxRounds) || 3} rondas máx.`;
 
   modeSummary.classList.remove('hidden');
-  modeSummary.innerHTML = `<strong>${GAME_MODES[mode]?.label || 'Clásico'}</strong>${timerText}${roundsText}<br><span class="text-gray-400">${getModeDescription(mode)}</span>`;
+  modeSummary.innerHTML = `<strong>${GAME_MODES[mode]?.label || 'Clásico'}</strong>${timerText} · rondas hasta capturar al infiltrado<br><span class="text-gray-400">${getModeDescription(mode)}</span>`;
 }
 
 function renderGame() {
@@ -859,26 +859,175 @@ function renderGame() {
     catEl.classList.add('hidden');
   }
 
-  document.getElementById('player-word').innerText = myData.eliminated ? 'ELIMINADO' : (myData.word || '???');
-  document.getElementById('game-status').innerText = `PARTIDA ${state.matchNumber || 1} · RONDA ${state.round || 1}/${Number(currentRoom.room_settings?.maxRounds) || 3}`;
+  renderRoleStatus(myData);
+  renderCurrentTurn(state);
+  maybeShowEliminationNotice(state, myData);
+
+  const wordLabel = myData.eliminated
+    ? (myData.isInfiltrado ? 'CAPTURADO' : 'ELIMINADO')
+    : (myData.word || '???');
+
+  document.getElementById('player-word').innerText = wordLabel;
+  document.getElementById('game-status').innerText = `PARTIDA ${state.matchNumber || 1} · RONDA ${state.round || 1}`;
   document.getElementById('mode-status').innerText = state.modeLabel || getModeLabel(state.mode || 'classic');
   renderTimerStatus();
-  animateElement(document.getElementById('word-container'), 'glow-pulse');
+  animateElement(document.getElementById('word-container'), myData.eliminated ? 'danger-pop' : 'glow-pulse');
 
   const turnList = document.getElementById('turn-list');
+  const currentTurn = getCurrentTurn(state);
   turnList.innerHTML = '';
-  (state.turnOrder || []).forEach(id => {
-    const p = state.players.find(pl => pl.id == id);
+  getOrderedPlayersForDisplay(state).forEach((p, index) => {
     if (!p) return;
+    const isCurrent = currentTurn?.player?.id == p.id;
     const span = document.createElement('span');
-    span.className = `px-3 py-1 rounded-full text-[10px] font-bold ${p.eliminated ? 'bg-gray-800 text-gray-600 line-through' : 'bg-brand/20 text-brand'}`;
-    span.innerText = p.name;
+    span.className = [
+      'px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all',
+      p.eliminated ? 'bg-gray-800 text-gray-600 line-through' : (isCurrent ? 'bg-brand text-white scale-110 shadow-lg shadow-brand/40 turn-chip-active' : 'bg-brand/20 text-brand')
+    ].join(' ');
+    span.innerText = `${index + 1}. ${p.name}`;
     turnList.appendChild(span);
   });
 
   document.getElementById('word-container').classList.remove('hidden');
   document.getElementById('voting-area').classList.add('hidden');
-  document.getElementById('btn-show-voting').classList.toggle('hidden', currentRoom.host_id != currentUser.id || myData.eliminated);
+
+  const isHost = currentRoom.host_id == currentUser.id;
+  const btn = document.getElementById('btn-show-voting');
+  const isLastTurn = currentTurn.index >= currentTurn.order.length - 1;
+  btn.classList.toggle('hidden', !isHost);
+  btn.innerText = isLastTurn ? 'Ir a votación' : 'Continuar';
+  btn.classList.toggle('bg-red-500/20', isLastTurn);
+  btn.classList.toggle('border-red-400', isLastTurn);
+  btn.classList.toggle('text-red-200', isLastTurn);
+  btn.classList.toggle('bg-brand/20', !isLastTurn);
+  btn.classList.toggle('border-brand', !isLastTurn);
+  btn.classList.toggle('text-brand', !isLastTurn);
+}
+
+function renderRoleStatus(myData) {
+  const roleStatus = document.getElementById('role-status');
+  if (!roleStatus || !myData) return;
+
+  roleStatus.classList.remove('hidden', 'bg-blue-500/20', 'text-blue-200', 'border-blue-400/50', 'bg-red-500/20', 'text-red-200', 'border-red-400/50');
+  roleStatus.classList.add('role-badge');
+
+  if (myData.isInfiltrado) {
+    roleStatus.innerText = myData.eliminated ? 'ERAS INFILTRADO' : 'ERES INFILTRADO';
+    roleStatus.classList.add('bg-red-500/20', 'text-red-200', 'border-red-400/50');
+  } else {
+    roleStatus.innerText = myData.eliminated ? 'ERAS CIVIL' : 'ERES CIVIL';
+    roleStatus.classList.add('bg-blue-500/20', 'text-blue-200', 'border-blue-400/50');
+  }
+}
+
+function renderCurrentTurn(state) {
+  const card = document.getElementById('current-turn-card');
+  const nameEl = document.getElementById('current-turn-name');
+  const hintEl = document.getElementById('current-turn-hint');
+  if (!card || !nameEl || !hintEl) return;
+
+  const currentTurn = getCurrentTurn(state);
+  if (!currentTurn.player) {
+    clearCurrentTurn();
+    return;
+  }
+
+  const isMe = currentTurn.player.id == currentUser.id;
+  card.classList.remove('hidden', 'my-turn', 'other-turn');
+  card.classList.add(isMe ? 'my-turn' : 'other-turn');
+  nameEl.innerText = currentTurn.player.name;
+  hintEl.innerText = isMe
+    ? 'Te toca hablar. Describe sin decir tu palabra.'
+    : `Escucha a ${currentTurn.player.name} y busca contradicciones.`;
+
+  document.getElementById('turn-info').innerText = isMe
+    ? '¡Te toca! Di algo relacionado sin revelar demasiado.'
+    : `Ahora habla ${currentTurn.player.name}.`;
+}
+
+function clearCurrentTurn() {
+  const card = document.getElementById('current-turn-card');
+  if (card) card.classList.add('hidden');
+  const info = document.getElementById('turn-info');
+  if (info) info.innerText = 'Vota cuando tengas claro quién no encaja.';
+}
+
+function getCurrentTurn(state) {
+  const order = getAliveTurnOrder(state);
+  if (!order.length) return { order, index: 0, player: null };
+
+  const safeIndex = Math.min(Math.max(Number(state.currentTurnIndex) || 0, 0), order.length - 1);
+  const player = state.players.find(candidate => candidate.id == order[safeIndex]) || null;
+  return { order, index: safeIndex, player };
+}
+
+function getAliveTurnOrder(state) {
+  const aliveIds = new Set(getAlivePlayers(state.players || []).map(player => player.id));
+  const ordered = (state.turnOrder || []).filter(id => aliveIds.has(id));
+  const missing = [...aliveIds].filter(id => !ordered.includes(id));
+  return [...ordered, ...missing];
+}
+
+function getOrderedPlayersForDisplay(state) {
+  const players = state.players || [];
+  const byId = new Map(players.map(player => [player.id, player]));
+  const seen = new Set();
+  const ordered = [];
+
+  (state.turnOrder || []).forEach(id => {
+    const player = byId.get(id);
+    if (!player || seen.has(player.id)) return;
+    seen.add(player.id);
+    ordered.push(player);
+  });
+
+  players.forEach(player => {
+    if (seen.has(player.id)) return;
+    ordered.push(player);
+  });
+
+  return ordered;
+}
+
+function buildTurnOrder(players) {
+  const alive = players.filter(player => !player.eliminated).map(player => player.id);
+  const eliminated = players.filter(player => player.eliminated).map(player => player.id);
+  return [
+    ...alive.map(id => ({ id, sort: Math.random() })).sort((a, b) => a.sort - b.sort).map(item => item.id),
+    ...eliminated
+  ];
+}
+
+function maybeShowEliminationNotice(state, myData) {
+  const elimination = state.lastElimination;
+  if (!elimination || elimination.id != currentUser.id) return;
+
+  const noticeKey = `${state.matchNumber || 1}:${elimination.round || state.round}:${elimination.id}:${elimination.captured ? 'captured' : 'eliminated'}`;
+  if (lastEliminationNoticeKey === noticeKey) return;
+  lastEliminationNoticeKey = noticeKey;
+  showEliminationNotice(elimination, myData);
+}
+
+function showEliminationNotice(elimination, myData) {
+  const overlay = document.getElementById('event-overlay');
+  const title = document.getElementById('event-overlay-title');
+  const subtitle = document.getElementById('event-overlay-subtitle');
+  if (!overlay || !title || !subtitle) return;
+
+  const captured = elimination.captured || myData?.isInfiltrado;
+  title.innerText = captured ? 'CAPTURADO' : 'ELIMINADO';
+  subtitle.innerText = captured
+    ? 'Te han pillado siendo infiltrado. Sigue mirando cómo acaba la partida.'
+    : 'La mayoría ha votado por ti. Sigues viendo la partida, pero ya no votas.';
+
+  overlay.classList.remove('hidden', 'captured-event', 'eliminated-event');
+  overlay.classList.add(captured ? 'captured-event' : 'eliminated-event');
+  feedback(captured ? 'error' : 'reveal');
+
+  setTimeout(() => {
+    overlay.classList.add('hidden');
+    overlay.classList.remove('captured-event', 'eliminated-event');
+  }, 2800);
 }
 
 function renderTimerStatus() {
@@ -922,10 +1071,14 @@ function renderVoting() {
     return;
   }
 
+  renderRoleStatus(myData);
+  clearCurrentTurn();
+  maybeShowEliminationNotice(currentRoom.game_state, myData);
+
   document.getElementById('word-container').classList.add('hidden');
   document.getElementById('voting-area').classList.remove('hidden');
   document.getElementById('btn-show-voting').classList.add('hidden');
-  document.getElementById('game-status').innerText = `PARTIDA ${currentRoom.game_state.matchNumber || 1} · VOTACIÓN ${currentRoom.game_state.round || 1}/${Number(currentRoom.room_settings?.maxRounds) || 3}`;
+  document.getElementById('game-status').innerText = `PARTIDA ${currentRoom.game_state.matchNumber || 1} · VOTACIÓN RONDA ${currentRoom.game_state.round || 1}`;
   document.getElementById('mode-status').innerText = currentRoom.game_state.modeLabel || getModeLabel(currentRoom.game_state.mode || 'classic');
   document.getElementById('timer-status').classList.add('hidden');
 
@@ -1017,9 +1170,11 @@ function buildStartGamePayload(players, { avoidPrevious = false } = {}) {
       pairIndex,
       wordPair: pair,
       round: 1,
+      currentTurnIndex: 0,
       votes: {},
       winner: null,
-      winnerReason: null
+      winnerReason: null,
+      lastElimination: null
     }
   };
 }
@@ -1112,8 +1267,22 @@ function resolveVotingState(state, votes) {
   const maxVotes = Math.max(...Object.values(counts));
   const tied = Object.keys(counts).filter(id => counts[id] === maxVotes);
   const eliminatedId = tied[Math.floor(Math.random() * tied.length)];
+  const eliminatedPlayer = state.players.find(player => player.id == eliminatedId);
+  const elimination = eliminatedPlayer ? {
+    id: eliminatedPlayer.id,
+    name: eliminatedPlayer.name,
+    word: eliminatedPlayer.word,
+    isInfiltrado: Boolean(eliminatedPlayer.isInfiltrado),
+    captured: Boolean(eliminatedPlayer.isInfiltrado),
+    round: Number(state.round) || 1,
+    matchNumber: Number(state.matchNumber) || 1,
+    at: Date.now()
+  } : null;
+
   const players = state.players.map(player =>
-    player.id == eliminatedId ? { ...player, eliminated: true } : { ...player }
+    player.id == eliminatedId
+      ? { ...player, eliminated: true, eliminatedRound: Number(state.round) || 1, captured: Boolean(player.isInfiltrado) }
+      : { ...player }
   );
 
   let status = 'playing';
@@ -1123,26 +1292,18 @@ function resolveVotingState(state, votes) {
   const infiltradosAlive = infiltrados.filter(player => !player.eliminated).length;
   const civiliansAlive = players.filter(player => !player.isInfiltrado && !player.eliminated).length;
   const round = Number(state.round) || 1;
-  const maxRounds = Number(currentRoom.room_settings?.maxRounds) || 3;
 
-  if (infiltradosAlive === 0) {
+  if (infiltradosAllCaptured(players)) {
     winner = 'civiles';
     status = 'results';
-    winnerReason = 'El infiltrado ha sido descubierto';
+    winnerReason = infiltrados.length > 1 ? 'Todos los infiltrados han sido capturados' : 'El infiltrado ha sido capturado';
     players.filter(player => !player.isInfiltrado).forEach(player => {
       player.points = (Number(player.points) || 0) + 1;
     });
-  } else if (civiliansAlive <= infiltradosAlive) {
+  } else if (civiliansAlive === 0) {
     winner = 'infiltrado';
     status = 'results';
-    winnerReason = 'Los infiltrados igualan o superan a los civiles';
-    infiltrados.filter(player => !player.eliminated).forEach(player => {
-      player.points = (Number(player.points) || 0) + 2;
-    });
-  } else if (round >= maxRounds) {
-    winner = 'infiltrado';
-    status = 'results';
-    winnerReason = `Se alcanzó el límite de ${maxRounds} ronda${maxRounds === 1 ? '' : 's'}`;
+    winnerReason = 'No quedan civiles en juego';
     infiltrados.filter(player => !player.eliminated).forEach(player => {
       player.points = (Number(player.points) || 0) + 2;
     });
@@ -1157,9 +1318,17 @@ function resolveVotingState(state, votes) {
       winner,
       winnerReason,
       round: status === 'playing' ? round + 1 : round,
-      roundStartedAt: status === 'playing' ? Date.now() : state.roundStartedAt
+      roundStartedAt: status === 'playing' ? Date.now() : state.roundStartedAt,
+      turnOrder: status === 'playing' ? buildTurnOrder(players) : state.turnOrder,
+      currentTurnIndex: 0,
+      lastElimination: elimination
     }
   };
+}
+
+function infiltradosAllCaptured(players) {
+  const infiltrados = players.filter(player => player.isInfiltrado);
+  return infiltrados.length > 0 && infiltrados.every(player => player.eliminated);
 }
 
 async function startGame() {
@@ -1198,6 +1367,40 @@ async function startGame() {
     console.error(error);
     feedback('error');
     alert('No se pudo comenzar la partida');
+  }
+}
+
+async function advanceTurn() {
+  feedback('click');
+  await refreshRoom({ forceRender: false });
+
+  if (currentRoom.host_id != currentUser.id) {
+    feedback('error');
+    alert('Solo el host puede avanzar el turno');
+    return;
+  }
+
+  const state = currentRoom.game_state;
+  if (!state || (currentRoom.status || state.status) !== 'playing') return;
+
+  const currentTurn = getCurrentTurn(state);
+  if (!currentTurn.order.length || currentTurn.index >= currentTurn.order.length - 1) {
+    await goToVoting();
+    return;
+  }
+
+  try {
+    await patchRoomState({
+      status: 'playing',
+      gameState: {
+        ...state,
+        currentTurnIndex: currentTurn.index + 1
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    feedback('error');
+    alert('No se pudo avanzar el turno');
   }
 }
 

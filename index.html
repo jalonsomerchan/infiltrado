@@ -38,6 +38,17 @@
     .screen-enter { animation: screenEnter .25s ease both; }
     @keyframes glowPulse { 0%,100%{box-shadow:0 0 0 rgba(124,58,237,0)} 50%{box-shadow:0 0 32px rgba(124,58,237,.45)} }
     .glow-pulse { animation: glowPulse .7s ease both; }
+    @keyframes turnPulse { 0%,100%{transform:scale(1);box-shadow:0 0 0 rgba(124,58,237,0)} 50%{transform:scale(1.03);box-shadow:0 0 34px rgba(124,58,237,.45)} }
+    .my-turn { animation: turnPulse 1.2s ease-in-out infinite; border-color: rgba(124,58,237,.85); }
+    .other-turn { animation: screenEnter .25s ease both; }
+    @keyframes chipWiggle { 0%,100%{transform:translateY(0) scale(1.08)} 50%{transform:translateY(-3px) scale(1.14)} }
+    .turn-chip-active { animation: chipWiggle .9s ease-in-out infinite; }
+    @keyframes dangerPop { 0%{transform:scale(.82) rotate(-2deg);filter:blur(1px);opacity:.55} 55%{transform:scale(1.08) rotate(1deg);filter:blur(0);opacity:1} 100%{transform:scale(1) rotate(0);opacity:1} }
+    .danger-pop { animation: dangerPop .45s cubic-bezier(.2,1.4,.3,1) both; }
+    @keyframes overlayBoom { 0%{transform:scale(.55);opacity:0;filter:blur(8px)} 18%{opacity:1} 70%{transform:scale(1.05);filter:blur(0)} 100%{transform:scale(1);opacity:1} }
+    @keyframes warningFlash { 0%,100%{box-shadow:0 0 40px rgba(239,68,68,.55)} 50%{box-shadow:0 0 75px rgba(124,58,237,.8)} }
+    .captured-event > div, .eliminated-event > div { animation: overlayBoom .45s cubic-bezier(.2,1.5,.3,1) both, warningFlash 1s ease-in-out infinite; }
+    .role-badge { border-width:1px; animation: screenEnter .25s ease both; }
   </style>
 </head>
 <body class="h-full bg-gray-950 text-white font-game select-none">
@@ -140,7 +151,7 @@
                 <option value="none">A nadie</option>
               </select>
             </div>
-            <div class="flex justify-between items-center">
+            <div class="hidden justify-between items-center">
               <span class="font-bold">Rondas</span>
               <input id="config-rounds" type="number" value="3" min="1" max="10" class="w-16 bg-gray-800 rounded-lg p-2 text-center" />
             </div>
@@ -200,7 +211,14 @@
           <div id="game-status" class="bg-brand/20 text-brand font-bold px-4 py-1 rounded-full inline-block text-xs tracking-widest uppercase">RONDA 1</div>
           <div id="mode-status" class="bg-gray-900 text-gray-300 font-bold px-4 py-1 rounded-full inline-block text-xs tracking-widest uppercase"></div>
           <div id="timer-status" class="hidden bg-red-500/20 text-red-300 font-bold px-4 py-1 rounded-full text-xs tracking-widest uppercase"></div>
+          <div id="role-status" class="hidden font-black px-4 py-1 rounded-full text-xs tracking-widest uppercase border"></div>
         </div>
+        <div id="current-turn-card" class="hidden bg-gray-900 border-2 border-brand/60 p-5 rounded-3xl w-full shadow-xl shadow-brand/10">
+          <p class="text-[10px] uppercase text-gray-500 font-black tracking-[0.3em] mb-2">Ahora le toca a</p>
+          <h3 id="current-turn-name" class="text-3xl font-black text-brand uppercase tracking-tight">Jugador</h3>
+          <p id="current-turn-hint" class="text-xs text-gray-400 mt-2 font-bold">Describe sin decir la palabra.</p>
+        </div>
+
         <div id="word-container" class="bg-gray-900 border-2 border-brand p-8 rounded-3xl w-full">
           <p id="category-display" class="text-brand text-xs font-black uppercase mb-1 hidden"></p>
           <p class="text-gray-400 text-sm uppercase tracking-widest mb-2 font-bold">Tu palabra es:</p>
@@ -223,7 +241,7 @@
       </div>
 
       <button id="btn-show-voting" class="w-full bg-brand/20 hover:bg-brand/30 border-2 border-brand text-brand rounded-2xl p-4 font-black uppercase tracking-widest transition-all hidden">
-        Ir a Votación
+        Continuar
       </button>
     </section>
 
@@ -236,6 +254,14 @@
       </button>
     </section>
   </main>
+
+  <div id="event-overlay" class="hidden fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-6">
+    <div class="w-full max-w-sm rounded-[2rem] border-2 border-red-400/70 bg-gray-950 p-8 text-center shadow-2xl">
+      <p class="text-[10px] font-black uppercase tracking-[0.45em] text-gray-500 mb-3">Votación resuelta</p>
+      <h2 id="event-overlay-title" class="text-5xl font-black italic tracking-tighter text-red-300 drop-shadow-[0_0_20px_rgba(248,113,113,.65)]">ELIMINADO</h2>
+      <p id="event-overlay-subtitle" class="text-gray-300 mt-4 font-bold leading-relaxed">La mayoría ha votado por ti.</p>
+    </div>
+  </div>
 
   <template id="tpl-player">
     <div class="flex items-center gap-4 bg-gray-900/50 p-4 rounded-2xl border-2 border-transparent transition-all">
