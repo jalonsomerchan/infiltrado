@@ -28,6 +28,7 @@ let audioContext = null;
 let timerInterval = null;
 let timerExpiredNotified = false;
 let lastEliminationNoticeKey = '';
+let lastTurnNoticeKey = '';
 let currentView = HOME_VIEW;
 let urlRoomCode = new URLSearchParams(window.location.search).get('room');
 
@@ -116,6 +117,11 @@ function setupEventListeners() {
   document.getElementById('btn-whatsapp').onclick = shareRoomOnWhatsApp;
   document.getElementById('btn-copy-code').onclick = copyRoomCode;
   document.getElementById('btn-copy-link').onclick = copyRoomLink;
+  document.getElementById('btn-vote-stats').onclick = showVoteStats;
+  document.getElementById('btn-close-vote-stats').onclick = hideVoteStats;
+  document.getElementById('vote-stats-modal').onclick = (event) => {
+    if (event.target.id === 'vote-stats-modal') hideVoteStats();
+  };
 }
 
 function setupHistoryNavigation() {
@@ -184,6 +190,7 @@ async function handleRouteChange({ view, roomCode }) {
   if (view === 'sala') { renderLobby(); showScreen('lobby'); return; }
   if (view === 'partida') { renderGame(); showScreen('game'); return; }
   if (view === 'votacion') { renderVoting(); showScreen('game'); return; }
+  if (view === 'ronda') { renderRoundResults(); showScreen('game'); return; }
   if (view === 'resultados') { renderResults(); showScreen('results'); return; }
 
   goHome({ skipRoute: true });
@@ -193,6 +200,7 @@ function routeForStatus(status) {
   if (status === 'waiting') return 'sala';
   if (status === 'playing') return 'partida';
   if (status === 'voting') return 'votacion';
+  if (status === 'round_results') return 'ronda';
   if (status === 'results') return 'resultados';
   return HOME_VIEW;
 }
@@ -368,6 +376,14 @@ function getAlivePlayers(players = getPlayers()) {
   return players.filter(player => !player.eliminated);
 }
 
+function isCurrentUserHost() {
+  return String(currentRoom?.host_id ?? '') === String(currentUser?.id ?? '');
+}
+
+function isVoteSecret() {
+  return currentRoom?.room_settings?.voteSecret !== false;
+}
+
 function hasDuplicatedName(players, username, ownId = currentUser?.id) {
   const normalizedUsername = username.trim().toLowerCase();
 
@@ -393,7 +409,7 @@ function buildLobbyPlayer(player, overrides = {}) {
     name: player.name,
     points: Number(player.points) || 0,
     eliminated: false,
-    isHost: player.isHost || player.id == currentRoom?.host_id,
+    isHost: player.isHost || String(player.id) === String(currentRoom?.host_id),
     ...overrides
   };
 }
@@ -529,6 +545,7 @@ function getSelectedRoomSettings() {
     timerSeconds: parseInt(document.getElementById('config-timer').value, 10) || 30,
     infiltradoMode: mode === 'blind' ? 'none' : document.getElementById('config-infiltrado-word').value,
     showCategory: document.getElementById('config-show-category').value,
+    voteSecret: document.getElementById('config-vote-secret').value === 'secret',
     maxRounds
   };
 }
@@ -810,6 +827,7 @@ function updateUIFromState({ skipRoute = false } = {}) {
   if (status === 'waiting') { renderLobby(); showScreen('lobby'); }
   else if (status === 'playing') { renderGame(); showScreen('game'); }
   else if (status === 'voting') { renderVoting(); showScreen('game'); }
+  else if (status === 'round_results') { renderRoundResults(); showScreen('game'); }
   else if (status === 'results') { renderResults(); showScreen('results'); }
 }
 
@@ -822,11 +840,11 @@ function renderLobby() {
   list.innerHTML = '';
   getPlayers().forEach(p => {
     const el = document.importNode(document.getElementById('tpl-player').content, true);
-    el.querySelector('.truncate').innerText = p.name + (p.id == currentRoom.host_id ? ' (Host)' : '');
+    el.querySelector('.truncate').innerText = p.name + (String(p.id) === String(currentRoom.host_id) ? ' (Host)' : '');
     el.querySelector('.w-12').innerText = (p.name || '?')[0].toUpperCase();
     list.appendChild(el);
   });
-  const isHost = currentRoom.host_id == currentUser.id;
+  const isHost = isCurrentUserHost();
   document.getElementById('admin-controls').classList.toggle('hidden', !isHost);
   document.getElementById('waiting-message').classList.toggle('hidden', isHost);
 }
@@ -836,9 +854,10 @@ function renderModeSummary() {
   const settings = currentRoom.room_settings || {};
   const mode = settings.mode || 'classic';
   const timerText = mode === 'timed' ? ` · ${settings.timerSeconds || 30}s por ronda` : '';
+  const voteText = settings.voteSecret === false ? ' · voto público' : ' · voto secreto';
 
   modeSummary.classList.remove('hidden');
-  modeSummary.innerHTML = `<strong>${GAME_MODES[mode]?.label || 'Clásico'}</strong>${timerText} · rondas hasta capturar al infiltrado<br><span class="text-gray-400">${getModeDescription(mode)}</span>`;
+  modeSummary.innerHTML = `<strong>${GAME_MODES[mode]?.label || 'Clásico'}</strong>${timerText}${voteText} · rondas hasta capturar al infiltrado<br><span class="text-gray-400">${getModeDescription(mode)}</span>`;
 }
 
 function renderGame() {
@@ -869,7 +888,6 @@ function renderGame() {
 
   document.getElementById('player-word').innerText = wordLabel;
   document.getElementById('game-status').innerText = `PARTIDA ${state.matchNumber || 1} · RONDA ${state.round || 1}`;
-  document.getElementById('mode-status').innerText = state.modeLabel || getModeLabel(state.mode || 'classic');
   renderTimerStatus();
   animateElement(document.getElementById('word-container'), myData.eliminated ? 'danger-pop' : 'glow-pulse');
 
@@ -890,8 +908,10 @@ function renderGame() {
 
   document.getElementById('word-container').classList.remove('hidden');
   document.getElementById('voting-area').classList.add('hidden');
+  document.getElementById('vote-reveal').classList.add('hidden');
+  document.getElementById('btn-vote-stats').classList.toggle('hidden', !hasVoteHistory(state));
 
-  const isHost = currentRoom.host_id == currentUser.id;
+  const isHost = isCurrentUserHost();
   const btn = document.getElementById('btn-show-voting');
   const isLastTurn = currentTurn.index >= currentTurn.order.length - 1;
   btn.classList.toggle('hidden', !isHost);
@@ -943,6 +963,10 @@ function renderCurrentTurn(state) {
   document.getElementById('turn-info').innerText = isMe
     ? '¡Te toca! Di algo relacionado sin revelar demasiado.'
     : `Ahora habla ${currentTurn.player.name}.`;
+
+  if (isMe && !currentTurn.player.eliminated) {
+    maybeShowTurnNotice(state, currentTurn);
+  }
 }
 
 function clearCurrentTurn() {
@@ -1064,7 +1088,8 @@ function stopTimer() {
 
 function renderVoting() {
   stopTimer();
-  const myData = currentRoom.game_state.players.find(p => p.id == currentUser.id);
+  const state = currentRoom.game_state;
+  const myData = state.players.find(p => p.id == currentUser.id);
   if (!myData) {
     clearPersistedRoom();
     showScreen('login');
@@ -1073,20 +1098,25 @@ function renderVoting() {
 
   renderRoleStatus(myData);
   clearCurrentTurn();
-  maybeShowEliminationNotice(currentRoom.game_state, myData);
+  maybeShowEliminationNotice(state, myData);
 
   document.getElementById('word-container').classList.add('hidden');
   document.getElementById('voting-area').classList.remove('hidden');
   document.getElementById('btn-show-voting').classList.add('hidden');
-  document.getElementById('game-status').innerText = `PARTIDA ${currentRoom.game_state.matchNumber || 1} · VOTACIÓN RONDA ${currentRoom.game_state.round || 1}`;
-  document.getElementById('mode-status').innerText = currentRoom.game_state.modeLabel || getModeLabel(currentRoom.game_state.mode || 'classic');
+  document.getElementById('game-status').innerText = `PARTIDA ${state.matchNumber || 1} · VOTACIÓN RONDA ${state.round || 1}`;
   document.getElementById('timer-status').classList.add('hidden');
+  document.getElementById('turn-order-container').classList.remove('hidden');
 
-  const votes = currentRoom.game_state.votes || {};
+  const voteReveal = document.getElementById('vote-reveal');
+  voteReveal.classList.add('hidden');
+  voteReveal.innerHTML = '';
+  document.getElementById('btn-vote-stats').classList.toggle('hidden', !hasVoteHistory(state));
+
+  const votes = state.votes || {};
   const hasVoted = Boolean(votes[currentUser.id]);
   const grid = document.getElementById('vote-grid');
   grid.innerHTML = '';
-  currentRoom.game_state.players.forEach(p => {
+  state.players.forEach(p => {
     if (p.id == currentUser.id || p.eliminated) return;
     const el = document.importNode(document.getElementById('tpl-vote-card').content, true);
     const btn = el.querySelector('button');
@@ -1103,6 +1133,190 @@ function renderVoting() {
     if (votes[currentUser.id] == p.id) btn.classList.add('selected');
     grid.appendChild(el);
   });
+
+  const aliveVoters = getAlivePlayers(state.players).length;
+  const votesCount = Object.keys(votes).length;
+  document.getElementById('turn-info').innerText = myData.eliminated
+    ? `Estás eliminado. Votos recibidos: ${votesCount}/${aliveVoters}`
+    : (hasVoted ? `Voto registrado. Esperando al resto: ${votesCount}/${aliveVoters}` : `Vota al infiltrado. Votos: ${votesCount}/${aliveVoters}`);
+}
+
+function renderRoundResults() {
+  stopTimer();
+  const state = currentRoom.game_state;
+  const myData = state.players.find(p => p.id == currentUser.id);
+  if (!myData) {
+    clearPersistedRoom();
+    showScreen('login');
+    return;
+  }
+
+  renderRoleStatus(myData);
+  clearCurrentTurn();
+  maybeShowEliminationNotice(state, myData);
+
+  const lastSummary = state.lastVoteSummary;
+  document.getElementById('word-container').classList.add('hidden');
+  document.getElementById('voting-area').classList.remove('hidden');
+  document.getElementById('timer-status').classList.add('hidden');
+  document.getElementById('turn-order-container').classList.add('hidden');
+  document.getElementById('game-status').innerText = `PARTIDA ${state.matchNumber || 1} · RESULTADO RONDA ${lastSummary?.round || state.round || 1}`;
+
+  const grid = document.getElementById('vote-grid');
+  grid.innerHTML = '';
+
+  const eliminated = lastSummary?.eliminated || state.lastElimination;
+  const resultCard = document.createElement('div');
+  resultCard.className = 'col-span-2 bg-gray-900 border-2 border-red-400/60 rounded-3xl p-5 text-center danger-pop';
+  resultCard.innerHTML = `
+    <p class="text-[10px] uppercase tracking-[0.35em] text-gray-500 font-black mb-2">Jugador eliminado</p>
+    <h3 class="text-3xl font-black ${eliminated?.captured ? 'text-red-300' : 'text-brand'}">${eliminated?.name || 'Sin eliminado'}</h3>
+    <p class="text-xs text-gray-400 mt-2 font-bold">${eliminated?.captured ? 'Era infiltrado y ha sido capturado.' : 'No era infiltrado. La partida continúa.'}</p>
+  `;
+  grid.appendChild(resultCard);
+
+  renderVoteReveal(lastSummary);
+  document.getElementById('btn-vote-stats').classList.toggle('hidden', !hasVoteHistory(state));
+
+  const isHost = isCurrentUserHost();
+  const btn = document.getElementById('btn-show-voting');
+  btn.classList.toggle('hidden', !isHost);
+  btn.innerText = 'Continuar';
+  btn.classList.remove('bg-red-500/20', 'border-red-400', 'text-red-200');
+  btn.classList.add('bg-brand/20', 'border-brand', 'text-brand');
+
+  document.getElementById('turn-info').innerText = isHost
+    ? 'Pulsa Continuar para empezar la siguiente ronda.'
+    : 'Esperando a que el admin continúe con la siguiente ronda.';
+}
+
+function renderVoteReveal(summary = currentRoom?.game_state?.lastVoteSummary) {
+  const container = document.getElementById('vote-reveal');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (!summary) {
+    container.classList.add('hidden');
+    return;
+  }
+
+  container.classList.remove('hidden');
+
+  const title = document.createElement('div');
+  title.className = 'bg-gray-900/80 border border-gray-800 rounded-2xl p-4 text-left';
+  title.innerHTML = `<p class="text-[10px] uppercase tracking-[0.3em] text-gray-500 font-black mb-2">Votación</p><p class="font-black text-white">${summary.secret ? 'Voto secreto activado' : 'Quién votó a quién'}</p>`;
+  container.appendChild(title);
+
+  if (summary.secret) {
+    const hidden = document.createElement('p');
+    hidden.className = 'text-center text-xs text-gray-500 bg-gray-900 rounded-2xl p-4';
+    hidden.innerText = 'Esta sala usa voto secreto. No se muestra quién votó a quién.';
+    container.appendChild(hidden);
+  } else {
+    (summary.votes || []).forEach((vote, index) => {
+      const row = document.createElement('div');
+      row.className = 'vote-reveal-row flex items-center justify-between gap-3 bg-gray-900 rounded-2xl p-3 border border-gray-800';
+      row.style.animationDelay = `${index * 45}ms`;
+      row.innerHTML = `<span class="font-bold truncate">${vote.voterName}</span><span class="text-gray-500 text-xs">votó a</span><span class="font-black text-brand truncate text-right">${vote.targetName}</span>`;
+      container.appendChild(row);
+    });
+  }
+
+  if (summary.counts?.length) {
+    const counts = document.createElement('div');
+    counts.className = 'bg-gray-900/70 rounded-2xl p-4 border border-gray-800 space-y-2';
+    counts.innerHTML = '<p class="text-[10px] uppercase tracking-[0.3em] text-gray-500 font-black">Recuento</p>';
+    summary.counts.forEach(item => {
+      const row = document.createElement('div');
+      row.className = 'flex justify-between text-sm';
+      row.innerHTML = `<span>${item.name}</span><span class="font-black text-brand">${item.votes}</span>`;
+      counts.appendChild(row);
+    });
+    container.appendChild(counts);
+  }
+}
+
+function hasVoteHistory(state = currentRoom?.game_state) {
+  return Boolean(state?.voteHistory?.length || state?.lastVoteSummary);
+}
+
+function showVoteStats() {
+  const modal = document.getElementById('vote-stats-modal');
+  const content = document.getElementById('vote-stats-content');
+  const history = currentRoom?.game_state?.voteHistory || [];
+  content.innerHTML = '';
+
+  if (!history.length) {
+    content.innerHTML = '<p class="text-center text-gray-500 text-sm p-4">Todavía no hay votaciones registradas.</p>';
+  }
+
+  history.slice().reverse().forEach(summary => {
+    const block = document.createElement('div');
+    block.className = 'bg-gray-900/80 border border-gray-800 rounded-2xl p-4 space-y-3';
+    const eliminated = summary.eliminated?.name || 'Sin eliminado';
+    block.innerHTML = `
+      <div class="flex justify-between gap-3 items-start">
+        <div>
+          <p class="text-[10px] uppercase tracking-[0.25em] text-gray-500 font-black">Partida ${summary.matchNumber || 1} · Ronda ${summary.round || 1}</p>
+          <h3 class="font-black text-white mt-1">Eliminado: <span class="text-brand">${eliminated}</span></h3>
+        </div>
+        <span class="text-[10px] font-black uppercase rounded-full px-2 py-1 ${summary.secret ? 'bg-gray-800 text-gray-400' : 'bg-brand/20 text-brand'}">${summary.secret ? 'Secreto' : 'Público'}</span>
+      </div>
+    `;
+
+    if (!summary.secret && summary.votes?.length) {
+      const votesWrap = document.createElement('div');
+      votesWrap.className = 'space-y-2';
+      summary.votes.forEach(vote => {
+        const row = document.createElement('div');
+        row.className = 'flex justify-between gap-3 text-sm bg-gray-950/70 rounded-xl p-2';
+        row.innerHTML = `<span class="truncate">${vote.voterName}</span><span class="text-gray-500">→</span><strong class="text-brand truncate text-right">${vote.targetName}</strong>`;
+        votesWrap.appendChild(row);
+      });
+      block.appendChild(votesWrap);
+    } else if (summary.secret) {
+      const secret = document.createElement('p');
+      secret.className = 'text-xs text-gray-500';
+      secret.innerText = 'Voto secreto: no se revela quién votó a quién.';
+      block.appendChild(secret);
+    }
+
+    if (summary.counts?.length) {
+      const countsWrap = document.createElement('div');
+      countsWrap.className = 'pt-2 border-t border-gray-800 space-y-1';
+      summary.counts.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'flex justify-between text-xs text-gray-400';
+        row.innerHTML = `<span>${item.name}</span><span>${item.votes} voto${item.votes === 1 ? '' : 's'}</span>`;
+        countsWrap.appendChild(row);
+      });
+      block.appendChild(countsWrap);
+    }
+
+    content.appendChild(block);
+  });
+
+  modal.classList.remove('hidden');
+  feedback('click');
+}
+
+function hideVoteStats() {
+  document.getElementById('vote-stats-modal').classList.add('hidden');
+}
+
+function maybeShowTurnNotice(state, currentTurn) {
+  const key = `${state.matchNumber || 1}:${state.round || 1}:${currentTurn.index}:${currentTurn.player?.id}`;
+  if (lastTurnNoticeKey === key) return;
+  lastTurnNoticeKey = key;
+  showTurnNotice();
+}
+
+function showTurnNotice() {
+  const overlay = document.getElementById('turn-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
+  feedback('success');
+  setTimeout(() => overlay.classList.add('hidden'), 1800);
 }
 
 function renderResults() {
@@ -1116,7 +1330,7 @@ function renderResults() {
   feedback('reveal');
 
   const continueButton = document.getElementById('btn-back-lobby');
-  const isHost = currentRoom.host_id == currentUser.id;
+  const isHost = isCurrentUserHost();
   continueButton.innerText = 'Continuar Partida';
   continueButton.classList.toggle('hidden', !isHost);
 
@@ -1127,7 +1341,7 @@ function renderResults() {
     : 'No se encontró al infiltrado.';
   resultsList.appendChild(info);
 
-  if (currentRoom.host_id != currentUser.id) {
+  if (!isCurrentUserHost()) {
     const wait = document.createElement('p');
     wait.className = 'text-center text-xs text-gray-500 mb-4 uppercase tracking-widest';
     wait.innerText = 'Esperando a que el administrador continúe la partida';
@@ -1139,6 +1353,15 @@ function renderResults() {
     reason.className = 'text-center text-xs text-gray-500 mb-4 uppercase tracking-widest';
     reason.innerText = state.winnerReason;
     resultsList.appendChild(reason);
+  }
+
+  if (hasVoteHistory(state)) {
+    const statsButton = document.createElement('button');
+    statsButton.type = 'button';
+    statsButton.className = 'w-full bg-gray-900 hover:bg-gray-800 border border-gray-700 rounded-2xl p-3 text-xs font-black uppercase tracking-widest transition-all';
+    statsButton.innerText = 'Estadísticas de votación';
+    statsButton.onclick = showVoteStats;
+    resultsList.appendChild(statsButton);
   }
 
   [...state.players].sort((a, b) => (b.points || 0) - (a.points || 0)).forEach(p => {
@@ -1172,6 +1395,8 @@ function buildStartGamePayload(players, { avoidPrevious = false } = {}) {
       round: 1,
       currentTurnIndex: 0,
       votes: {},
+      voteHistory: [],
+      lastVoteSummary: null,
       winner: null,
       winnerReason: null,
       lastElimination: null
@@ -1259,39 +1484,43 @@ function resolveVotingState(state, votes) {
     };
   }
 
-  const counts = {};
+  const countsById = {};
   Object.values(votes).forEach(id => {
-    counts[id] = (counts[id] || 0) + 1;
+    countsById[id] = (countsById[id] || 0) + 1;
   });
 
-  const maxVotes = Math.max(...Object.values(counts));
-  const tied = Object.keys(counts).filter(id => counts[id] === maxVotes);
+  const maxVotes = Math.max(...Object.values(countsById));
+  const tied = Object.keys(countsById).filter(id => countsById[id] === maxVotes);
   const eliminatedId = tied[Math.floor(Math.random() * tied.length)];
   const eliminatedPlayer = state.players.find(player => player.id == eliminatedId);
+  const round = Number(state.round) || 1;
+  const matchNumber = Number(state.matchNumber) || 1;
   const elimination = eliminatedPlayer ? {
     id: eliminatedPlayer.id,
     name: eliminatedPlayer.name,
     word: eliminatedPlayer.word,
     isInfiltrado: Boolean(eliminatedPlayer.isInfiltrado),
     captured: Boolean(eliminatedPlayer.isInfiltrado),
-    round: Number(state.round) || 1,
-    matchNumber: Number(state.matchNumber) || 1,
+    round,
+    matchNumber,
     at: Date.now()
   } : null;
 
   const players = state.players.map(player =>
     player.id == eliminatedId
-      ? { ...player, eliminated: true, eliminatedRound: Number(state.round) || 1, captured: Boolean(player.isInfiltrado) }
+      ? { ...player, eliminated: true, eliminatedRound: round, captured: Boolean(player.isInfiltrado) }
       : { ...player }
   );
 
-  let status = 'playing';
+  const voteSummary = buildVoteSummary({ ...state, players }, votes, countsById, elimination);
+  const voteHistory = [...(state.voteHistory || []), voteSummary];
+
+  let status = 'round_results';
   let winner = null;
   let winnerReason = null;
   const infiltrados = players.filter(player => player.isInfiltrado);
   const infiltradosAlive = infiltrados.filter(player => !player.eliminated).length;
   const civiliansAlive = players.filter(player => !player.isInfiltrado && !player.eliminated).length;
-  const round = Number(state.round) || 1;
 
   if (infiltradosAllCaptured(players)) {
     winner = 'civiles';
@@ -1300,10 +1529,12 @@ function resolveVotingState(state, votes) {
     players.filter(player => !player.isInfiltrado).forEach(player => {
       player.points = (Number(player.points) || 0) + 1;
     });
-  } else if (civiliansAlive === 0) {
+  } else if (infiltradosAlive > 0 && infiltradosAlive >= civiliansAlive) {
     winner = 'infiltrado';
     status = 'results';
-    winnerReason = 'No quedan civiles en juego';
+    winnerReason = civiliansAlive <= 1
+      ? 'Solo queda un civil frente a los infiltrados'
+      : 'Los infiltrados igualan o superan a los civiles vivos';
     infiltrados.filter(player => !player.eliminated).forEach(player => {
       player.points = (Number(player.points) || 0) + 2;
     });
@@ -1314,15 +1545,49 @@ function resolveVotingState(state, votes) {
     gameState: {
       ...state,
       players,
-      votes: status === 'playing' ? {} : votes,
+      votes,
+      voteHistory,
+      lastVoteSummary: voteSummary,
       winner,
       winnerReason,
-      round: status === 'playing' ? round + 1 : round,
-      roundStartedAt: status === 'playing' ? Date.now() : state.roundStartedAt,
-      turnOrder: status === 'playing' ? buildTurnOrder(players) : state.turnOrder,
+      round,
+      roundStartedAt: state.roundStartedAt,
+      turnOrder: state.turnOrder,
       currentTurnIndex: 0,
       lastElimination: elimination
     }
+  };
+}
+
+function buildVoteSummary(state, votes, countsById, elimination) {
+  const playersById = new Map((state.players || []).map(player => [String(player.id), player]));
+  const voteRows = Object.entries(votes).map(([voterId, targetId]) => {
+    const voter = playersById.get(String(voterId));
+    const target = playersById.get(String(targetId));
+    return {
+      voterId,
+      voterName: voter?.name || 'Jugador',
+      targetId,
+      targetName: target?.name || 'Jugador'
+    };
+  });
+
+  const counts = Object.entries(countsById)
+    .map(([targetId, total]) => ({
+      id: targetId,
+      name: playersById.get(String(targetId))?.name || 'Jugador',
+      votes: total
+    }))
+    .sort((a, b) => b.votes - a.votes || a.name.localeCompare(b.name));
+
+  return {
+    matchNumber: Number(state.matchNumber) || 1,
+    round: Number(state.round) || 1,
+    secret: isVoteSecret(),
+    votes: voteRows,
+    counts,
+    eliminated: elimination,
+    createdAt: Date.now()
   };
 }
 
@@ -1336,7 +1601,7 @@ async function startGame() {
   await refreshRoom({ forceRender: false });
   const players = getPlayers();
 
-  if (currentRoom.host_id != currentUser.id) {
+  if (!isCurrentUserHost()) {
     feedback('error');
     alert('Solo el host puede comenzar la partida');
     return;
@@ -1374,14 +1639,22 @@ async function advanceTurn() {
   feedback('click');
   await refreshRoom({ forceRender: false });
 
-  if (currentRoom.host_id != currentUser.id) {
+  if (!isCurrentUserHost()) {
     feedback('error');
     alert('Solo el host puede avanzar el turno');
     return;
   }
 
   const state = currentRoom.game_state;
-  if (!state || (currentRoom.status || state.status) !== 'playing') return;
+  const status = currentRoom.status || state?.status;
+  if (!state) return;
+
+  if (status === 'round_results') {
+    await continueAfterRound();
+    return;
+  }
+
+  if (status !== 'playing') return;
 
   const currentTurn = getCurrentTurn(state);
   if (!currentTurn.order.length || currentTurn.index >= currentTurn.order.length - 1) {
@@ -1404,11 +1677,39 @@ async function advanceTurn() {
   }
 }
 
+async function continueAfterRound() {
+  const state = currentRoom.game_state;
+  if (!state || (currentRoom.status || state.status) !== 'round_results') return;
+
+  const players = (state.players || []).map(player => ({ ...player }));
+  const nextRound = (Number(state.round) || 1) + 1;
+
+  try {
+    await patchRoomState({
+      status: 'playing',
+      gameState: {
+        ...state,
+        players,
+        status: 'playing',
+        votes: {},
+        round: nextRound,
+        roundStartedAt: Date.now(),
+        turnOrder: buildTurnOrder(players),
+        currentTurnIndex: 0
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    feedback('error');
+    alert('No se pudo continuar la ronda');
+  }
+}
+
 async function goToVoting() {
   feedback('click');
   await refreshRoom({ forceRender: false });
 
-  if (currentRoom.host_id != currentUser.id) {
+  if (!isCurrentUserHost()) {
     feedback('error');
     alert('Solo el host puede iniciar la votación');
     return;
@@ -1470,7 +1771,7 @@ async function castVote(targetId, button) {
 async function continueGame() {
   feedback('click');
 
-  if (currentRoom.host_id != currentUser.id) {
+  if (!isCurrentUserHost()) {
     feedback('error');
     alert('Solo el host puede continuar la partida');
     return;
@@ -1478,7 +1779,7 @@ async function continueGame() {
 
   try {
     await refreshRoom({ forceRender: false });
-    const players = getPlayers().map(player => buildLobbyPlayer(player, { isHost: player.id == currentRoom.host_id }));
+    const players = getPlayers().map(player => buildLobbyPlayer(player, { isHost: String(player.id) === String(currentRoom.host_id) }));
 
     if (players.length < MIN_PLAYERS) {
       feedback('error');

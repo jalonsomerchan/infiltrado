@@ -49,6 +49,11 @@
     @keyframes warningFlash { 0%,100%{box-shadow:0 0 40px rgba(239,68,68,.55)} 50%{box-shadow:0 0 75px rgba(124,58,237,.8)} }
     .captured-event > div, .eliminated-event > div { animation: overlayBoom .45s cubic-bezier(.2,1.5,.3,1) both, warningFlash 1s ease-in-out infinite; }
     .role-badge { border-width:1px; animation: screenEnter .25s ease both; }
+    @keyframes turnOverlayPop { 0%{transform:translateY(18px) scale(.7);opacity:0;filter:blur(8px)} 55%{transform:translateY(-4px) scale(1.08);opacity:1;filter:blur(0)} 100%{transform:translateY(0) scale(1);opacity:1} }
+    @keyframes turnGlow { 0%,100%{box-shadow:0 0 35px rgba(124,58,237,.45)} 50%{box-shadow:0 0 70px rgba(167,139,250,.75)} }
+    .turn-alert > div { animation: turnOverlayPop .45s cubic-bezier(.2,1.5,.3,1) both, turnGlow 1s ease-in-out infinite; }
+    .stats-panel-enter { animation: screenEnter .22s ease both; }
+    .vote-reveal-row { animation: screenEnter .2s ease both; }
   </style>
 </head>
 <body class="h-full bg-gray-950 text-white font-game select-none">
@@ -151,6 +156,13 @@
                 <option value="none">A nadie</option>
               </select>
             </div>
+            <div class="flex justify-between items-center">
+              <span class="font-bold">Voto secreto</span>
+              <select id="config-vote-secret" class="bg-gray-800 rounded-lg p-2 outline-none">
+                <option value="secret" selected>Sí</option>
+                <option value="open">No, mostrar votos</option>
+              </select>
+            </div>
             <div class="hidden justify-between items-center">
               <span class="font-bold">Rondas</span>
               <input id="config-rounds" type="number" value="3" min="1" max="10" class="w-16 bg-gray-800 rounded-lg p-2 text-center" />
@@ -209,7 +221,6 @@
       <div class="w-full text-center space-y-4">
         <div class="flex justify-center gap-2 flex-wrap">
           <div id="game-status" class="bg-brand/20 text-brand font-bold px-4 py-1 rounded-full inline-block text-xs tracking-widest uppercase">RONDA 1</div>
-          <div id="mode-status" class="bg-gray-900 text-gray-300 font-bold px-4 py-1 rounded-full inline-block text-xs tracking-widest uppercase"></div>
           <div id="timer-status" class="hidden bg-red-500/20 text-red-300 font-bold px-4 py-1 rounded-full text-xs tracking-widest uppercase"></div>
           <div id="role-status" class="hidden font-black px-4 py-1 rounded-full text-xs tracking-widest uppercase border"></div>
         </div>
@@ -234,6 +245,10 @@
       <div id="voting-area" class="w-full flex-1 overflow-y-auto hidden">
         <h3 class="text-xl font-black text-center mb-4 text-gray-400 uppercase tracking-widest">¿Quién es el infiltrado?</h3>
         <div id="vote-grid" class="grid grid-cols-2 gap-4 pb-4"></div>
+        <div id="vote-reveal" class="hidden mt-4 space-y-2"></div>
+        <button id="btn-vote-stats" type="button" class="hidden w-full bg-gray-900 hover:bg-gray-800 border border-gray-700 rounded-2xl p-3 text-xs font-black uppercase tracking-widest transition-all mt-4">
+          Estadísticas de votación
+        </button>
       </div>
 
       <div id="turn-info" class="text-center text-gray-400 italic">
@@ -260,6 +275,27 @@
       <p class="text-[10px] font-black uppercase tracking-[0.45em] text-gray-500 mb-3">Votación resuelta</p>
       <h2 id="event-overlay-title" class="text-5xl font-black italic tracking-tighter text-red-300 drop-shadow-[0_0_20px_rgba(248,113,113,.65)]">ELIMINADO</h2>
       <p id="event-overlay-subtitle" class="text-gray-300 mt-4 font-bold leading-relaxed">La mayoría ha votado por ti.</p>
+    </div>
+  </div>
+
+  <div id="turn-overlay" class="hidden turn-alert fixed inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-none">
+    <div class="w-full max-w-sm rounded-[2rem] border-2 border-brand/80 bg-gray-950 p-8 text-center shadow-2xl">
+      <p class="text-[10px] font-black uppercase tracking-[0.45em] text-gray-500 mb-3">Turno de palabra</p>
+      <h2 class="text-6xl font-black italic tracking-tighter text-brand drop-shadow-[0_0_22px_rgba(167,139,250,.7)]">¡TE TOCA!</h2>
+      <p class="text-gray-300 mt-4 font-bold leading-relaxed">Di una pista sin decir tu palabra.</p>
+    </div>
+  </div>
+
+  <div id="vote-stats-modal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="stats-panel-enter w-full max-w-md max-h-[85vh] overflow-y-auto rounded-[2rem] border border-gray-700 bg-gray-950 p-5 shadow-2xl">
+      <div class="flex items-center justify-between gap-4 mb-4">
+        <div>
+          <p class="text-[10px] uppercase tracking-[0.35em] text-gray-500 font-black">Historial</p>
+          <h2 class="text-2xl font-black text-brand">Votaciones</h2>
+        </div>
+        <button id="btn-close-vote-stats" type="button" class="bg-gray-900 hover:bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-xs font-black uppercase">Cerrar</button>
+      </div>
+      <div id="vote-stats-content" class="space-y-4"></div>
     </div>
   </div>
 

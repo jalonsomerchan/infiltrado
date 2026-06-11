@@ -1,28 +1,31 @@
-# Cambios de jugabilidad
+# Cambios incluidos
 
-- Las partidas siguen siendo infinitas dentro de la misma sala.
-- Al terminar una partida, el admin pulsa **Continuar Partida** y se genera otra partida con nuevas palabras y otro infiltrado cuando sea posible.
-- Durante cada ronda se muestra a todos quién tiene que hablar.
-- El admin avanza manualmente con **Continuar**. Al llegar al último jugador vivo, el botón pasa a **Ir a votación**.
-- En cada votación se elimina al jugador más votado.
-- La partida no termina por límite de rondas: continúa hasta capturar al último infiltrado.
-- Si ya no quedan civiles, ganan los infiltrados.
-- Arriba se muestra si eres **Civil** o **Infiltrado**.
-- Si te eliminan aparece una animación grande de **ELIMINADO**.
-- Si te pillan siendo infiltrado aparece una animación de **CAPTURADO**.
+## Flujo de turnos
+- Se muestra a todos quién tiene que hablar.
+- El admin ve el mismo aviso de turno que el resto.
+- El admin tiene siempre el botón **Continuar** durante la fase de palabra.
+- Cuando llega el último jugador vivo, el botón pasa a **Ir a votación**.
+- Al jugador que tiene que hablar se le muestra una animación grande de **¡TE TOCA!**.
 
-# Ficheros modificados
+## Rol visible
+- Arriba se muestra si eres **CIVIL** o **INFILTRADO**.
+- También se muestra al admin, porque el admin es un jugador más.
+- Se elimina el `mode-status` de la pantalla de partida.
 
-- `index.html`
-- `js/game.js`
+## Votación
+- Nueva opción al crear sala: **Voto secreto**.
+- Si el voto secreto está desactivado, al resolverse la votación se muestra quién ha votado a quién.
+- Se guarda historial de votación por ronda.
+- Nuevo botón **Estadísticas de votación** para consultar rondas anteriores.
 
-# Notas
+## Eliminación y victoria
+- En cada ronda se elimina el jugador más votado.
+- Si se captura a un infiltrado, solo termina la partida cuando ya no queda ningún infiltrado vivo.
+- Si los infiltrados vivos igualan o superan a los civiles vivos, ganan los infiltrados. Esto cubre el caso de que queden todos infiltrados menos un civil.
+- Se mantienen las animaciones de **ELIMINADO** y **CAPTURADO**.
 
-Se mantiene el backend actual:
-
-- `POST /rooms`
-- `POST /rooms/{code}/join`
-- `GET /rooms/{code}`
-- `PATCH /rooms/{code}/state`
-
-No se usa `/actions`, no se usa `wss://alon.one/...` y no se añaden headers CORS problemáticos.
+## Compatibilidad
+- No se usa `/actions`.
+- No se usa `wss://alon.one/...`.
+- No se añaden headers CORS problemáticos.
+- Se mantiene `PATCH /rooms/{code}/state` y `https://esm.sh/itty-sockets`.
