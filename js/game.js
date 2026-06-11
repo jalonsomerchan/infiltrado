@@ -16,8 +16,10 @@ let currentUser = JSON.parse(localStorage.getItem(USER_STORAGE_KEY)) || null;
 let currentRoom = null;
 let socket = null;
 let socketRoomCode = null;
+let socketSessionId = 0;
 let reconnectAttempts = 0;
-let manualSocketClose = false;
+let reconnectTimer = null;
+let voteSubmitting = false;
 let audioContext = null;
 let timerInterval = null;
 let timerExpiredNotified = false;
@@ -64,40 +66,11 @@ async function init() {
 }
 
 function setupExitButtons() {
-  addExitButton({
-    parent: document.getElementById('join-container'),
-    id: 'btn-back-from-join',
-    label: 'Volver al inicio',
-    onClick: goHome
-  });
-
-  addExitButton({
-    parent: document.getElementById('config-container'),
-    id: 'btn-cancel-config',
-    label: 'Volver al inicio',
-    onClick: goHome
-  });
-
-  addExitButton({
-    parent: document.getElementById('screen-lobby'),
-    id: 'btn-leave-lobby',
-    label: 'Salir de la sala',
-    onClick: leaveRoomAndGoHome
-  });
-
-  addExitButton({
-    parent: document.getElementById('screen-game'),
-    id: 'btn-leave-game',
-    label: 'Salir de la partida',
-    onClick: () => leaveRoomAndGoHome({ askConfirmation: true })
-  });
-
-  addExitButton({
-    parent: document.getElementById('screen-results'),
-    id: 'btn-leave-results',
-    label: 'Salir al inicio',
-    onClick: leaveRoomAndGoHome
-  });
+  addExitButton({ parent: document.getElementById('join-container'), id: 'btn-back-from-join', label: 'Volver al inicio', onClick: goHome });
+  addExitButton({ parent: document.getElementById('config-container'), id: 'btn-cancel-config', label: 'Volver al inicio', onClick: goHome });
+  addExitButton({ parent: document.getElementById('screen-lobby'), id: 'btn-leave-lobby', label: 'Salir de la sala', onClick: leaveRoomAndGoHome });
+  addExitButton({ parent: document.getElementById('screen-game'), id: 'btn-leave-game', label: 'Salir de la partida', onClick: () => leaveRoomAndGoHome({ askConfirmation: true }) });
+  addExitButton({ parent: document.getElementById('screen-results'), id: 'btn-leave-results', label: 'Salir al inicio', onClick: leaveRoomAndGoHome });
 }
 
 function addExitButton({ parent, id, label, onClick }) {
@@ -259,10 +232,7 @@ function validateUser() {
 }
 
 function showScreen(screenId) {
-  Object.values(screens).forEach(s => {
-    s.classList.remove('active', 'screen-enter');
-  });
-
+  Object.values(screens).forEach(s => s.classList.remove('active', 'screen-enter'));
   if (screenId !== 'game') stopTimer();
   screens[screenId].classList.add('active', 'screen-enter');
 }
@@ -273,9 +243,7 @@ function resetHomeUI() {
   document.getElementById('config-container').classList.add('hidden');
   document.getElementById('join-code').value = '';
 
-  if (currentUser) {
-    document.getElementById('login-username').value = currentUser.username;
-  }
+  if (currentUser) document.getElementById('login-username').value = currentUser.username;
 }
 
 function goHome({ skipRoute = false } = {}) {
@@ -283,7 +251,6 @@ function goHome({ skipRoute = false } = {}) {
   closeSocket();
   stopTimer();
   currentRoom = null;
-  socketRoomCode = null;
   reconnectAttempts = 0;
   urlRoomCode = null;
   resetHomeUI();
@@ -299,7 +266,6 @@ function leaveRoomAndGoHome({ askConfirmation = false, skipRoute = false } = {})
   stopTimer();
   clearPersistedRoom();
   currentRoom = null;
-  socketRoomCode = null;
   reconnectAttempts = 0;
   urlRoomCode = null;
   resetHomeUI();
@@ -308,10 +274,16 @@ function leaveRoomAndGoHome({ askConfirmation = false, skipRoute = false } = {})
 }
 
 function closeSocket() {
-  manualSocketClose = true;
-  if (socket?.close) socket.close();
+  socketSessionId += 1;
+  socketRoomCode = null;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  const socketToClose = socket;
   socket = null;
-  manualSocketClose = false;
+  if (socketToClose?.close) socketToClose.close();
 }
 
 function feedback(type = 'click') {
@@ -377,6 +349,10 @@ function getPlayers() {
   return currentRoom?.game_state?.players || [];
 }
 
+function getAlivePlayers(players = getPlayers()) {
+  return players.filter(player => !player.eliminated);
+}
+
 function hasDuplicatedName(players, username, ownId = currentUser?.id) {
   const normalizedUsername = username.trim().toLowerCase();
 
@@ -396,6 +372,54 @@ function buildCurrentPlayer(overrides = {}) {
   };
 }
 
+function buildLobbyPlayer(player, overrides = {}) {
+  return {
+    id: player.id,
+    name: player.name,
+    points: Number(player.points) || 0,
+    eliminated: false,
+    isHost: player.isHost || player.id == currentRoom?.host_id,
+    ...overrides
+  };
+}
+
+function normalizeRoomResponse(response) {
+  if (!response) return null;
+  if (response.room) return response.room;
+  if (response.data?.room) return response.data.room;
+  if (response.room_code || response.game_state || response.status) return response;
+  return null;
+}
+
+function mergeRoomResponse(response, fallback = {}) {
+  const room = normalizeRoomResponse(response);
+
+  currentRoom = {
+    ...currentRoom,
+    ...(room || {}),
+    room_settings: room?.room_settings || fallback.roomSettings || currentRoom?.room_settings || {},
+    game_state: room?.game_state || fallback.gameState || currentRoom?.game_state || {},
+    status: room?.status || fallback.status || currentRoom?.status
+  };
+
+  if (currentRoom.room_code) {
+    persistRoom(currentRoom.room_code);
+    if (socketRoomCode !== currentRoom.room_code) initSocket(currentRoom.room_code);
+  }
+
+  updateUIFromState();
+  return response;
+}
+
+async function patchRoomState({ gameState, status, roomSettings } = {}) {
+  if (!currentRoom?.room_code) throw new Error('No hay sala activa');
+
+  const response = await api.updateRoomState(currentRoom.room_code, { gameState, status, roomSettings });
+  mergeRoomResponse(response, { gameState, status, roomSettings });
+  broadcastRoomState();
+  return response;
+}
+
 async function ensureCurrentPlayerInRoom() {
   const players = getPlayers();
   const existingPlayer = players.find(player => player.id === currentUser.id);
@@ -406,14 +430,12 @@ async function ensureCurrentPlayerInRoom() {
     ? players.map(player => player.id === currentUser.id ? { ...player, name: currentUser.username } : player)
     : [...players, buildCurrentPlayer()];
 
-  await api.updateRoomState(currentRoom.room_code, {
+  await patchRoomState({
     gameState: {
       ...currentRoom.game_state,
       players: updatedPlayers
     }
   });
-
-  currentRoom.game_state.players = updatedPlayers;
 }
 
 function persistRoom(roomCode) {
@@ -424,12 +446,12 @@ function clearPersistedRoom() {
   localStorage.removeItem(ROOM_STORAGE_KEY);
 }
 
-function getRoomUrl() {
-  return `${window.location.origin}${window.location.pathname}?room=${currentRoom.room_code}&view=unirse`;
+function getRoomUrl(roomCode = currentRoom?.room_code) {
+  return `${window.location.origin}${window.location.pathname}?room=${roomCode}&view=unirse`;
 }
 
-function getShareText() {
-  return `Únete a mi partida de Infiltrado 🔥 Código: ${currentRoom.room_code} ${getRoomUrl()}`;
+function getShareText(roomCode = currentRoom?.room_code) {
+  return `Únete a mi partida de Infiltrado 🔥 Código: ${roomCode} ${getRoomUrl(roomCode)}`;
 }
 
 function updateSharePanel() {
@@ -445,6 +467,7 @@ function updateSharePanel() {
 
 function getSelectedRoomSettings() {
   const mode = document.getElementById('config-mode').value;
+  const maxRounds = Math.max(1, Math.min(10, parseInt(document.getElementById('config-rounds').value, 10) || 3));
 
   return {
     mode,
@@ -453,7 +476,7 @@ function getSelectedRoomSettings() {
     timerSeconds: parseInt(document.getElementById('config-timer').value, 10) || 30,
     infiltradoMode: mode === 'blind' ? 'none' : document.getElementById('config-infiltrado-word').value,
     showCategory: document.getElementById('config-show-category').value,
-    maxRounds: parseInt(document.getElementById('config-rounds').value, 10) || 3
+    maxRounds
   };
 }
 
@@ -521,41 +544,136 @@ async function refreshRoom() {
   }
 }
 
+function getSocketChannel(code) {
+  return `infiltrado:room:${String(code).trim().toUpperCase()}`;
+}
+
 function initSocket(code) {
   closeSocket();
 
+  const sessionId = socketSessionId + 1;
+  socketSessionId = sessionId;
   socketRoomCode = code;
-  socket = connect(`wss://alon.one/juegos/api/ws/rooms/${code}`);
+  socket = connect(getSocketChannel(code));
 
-  socket.on('player_joined', refreshRoom);
-  socket.on('state_updated', (data) => {
-    if (!currentRoom) return;
-    currentRoom.game_state = data.game_state;
-    currentRoom.status = data.status;
-    updateUIFromState();
+  bindSocketEvent('player_joined', () => refreshRoom());
+  bindSocketEvent('state_updated', (data) => handleRemoteStateUpdate(data, sessionId));
+  bindSocketEvent('message', (message) => handleSocketMessage(message, sessionId));
+  bindSocketEvent('open', () => {
+    if (socketSessionId === sessionId) reconnectAttempts = 0;
   });
-  socket.on('open', () => {
-    reconnectAttempts = 0;
+  bindSocketEvent('close', () => {
+    if (socketSessionId === sessionId && socketRoomCode === code && currentRoom?.room_code === code) reconnectSocket(code, sessionId);
   });
-  socket.on('close', () => {
-    if (!manualSocketClose && socketRoomCode === code) reconnectSocket(code);
-  });
-  socket.on('error', (err) => {
+  bindSocketEvent('error', (err) => {
     console.error('Socket error', err);
   });
 }
 
-function reconnectSocket(code) {
+function bindSocketEvent(eventName, handler) {
+  if (typeof socket?.on === 'function') {
+    socket.on(eventName, handler);
+    return;
+  }
+
+  if (typeof socket?.addEventListener === 'function') {
+    socket.addEventListener(eventName, handler);
+  }
+}
+
+function normalizeSocketMessage(message) {
+  const raw = message?.data ?? message;
+  if (typeof raw !== 'string') return raw;
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { type: raw };
+  }
+}
+
+function handleSocketMessage(message, sessionId) {
+  const data = normalizeSocketMessage(message);
+  if (!data || data.sender_id === currentUser?.id) return;
+  if (data.room_code && data.room_code !== socketRoomCode) return;
+
+  if (data.type === 'state_updated') {
+    handleRemoteStateUpdate(data.payload || data, sessionId);
+    return;
+  }
+
+  if (data.type === 'player_joined') refreshRoom();
+}
+
+function handleRemoteStateUpdate(data, sessionId) {
+  const payload = normalizeSocketMessage(data);
+  const roomPayload = payload?.payload || payload;
+
+  if (!currentRoom || socketSessionId !== sessionId) return;
+  if (roomPayload?.room_code && roomPayload.room_code !== currentRoom.room_code) return;
+
+  if (!roomPayload?.game_state && !roomPayload?.status && !roomPayload?.room_settings) {
+    refreshRoom();
+    return;
+  }
+
+  currentRoom = {
+    ...currentRoom,
+    status: roomPayload.status || currentRoom.status,
+    room_settings: roomPayload.room_settings || currentRoom.room_settings,
+    game_state: roomPayload.game_state || currentRoom.game_state
+  };
+  updateUIFromState();
+}
+
+function emitSocketEvent(type, payload = {}) {
+  if (!socket || !socketRoomCode) return;
+
+  const message = {
+    type,
+    room_code: socketRoomCode,
+    sender_id: currentUser?.id,
+    payload
+  };
+
+  try {
+    if (typeof socket.emit === 'function') {
+      socket.emit(type, message);
+    } else if (typeof socket.publish === 'function') {
+      socket.publish(type, message);
+    } else if (typeof socket.send === 'function') {
+      socket.send(JSON.stringify(message));
+    }
+  } catch (error) {
+    console.error('No se pudo emitir por IttySockets', error);
+  }
+}
+
+function broadcastRoomState() {
+  if (!currentRoom) return;
+
+  emitSocketEvent('state_updated', {
+    room_code: currentRoom.room_code,
+    status: currentRoom.status,
+    room_settings: currentRoom.room_settings,
+    game_state: currentRoom.game_state
+  });
+}
+
+function reconnectSocket(code, sessionId) {
   reconnectAttempts += 1;
   const delay = Math.min(SOCKET_RECONNECT_BASE_MS * 2 ** (reconnectAttempts - 1), SOCKET_RECONNECT_MAX_MS);
 
-  setTimeout(() => {
-    if (currentRoom?.room_code === code) initSocket(code);
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (socketSessionId === sessionId && currentRoom?.room_code === code) initSocket(code);
   }, delay);
 }
 
 function updateUIFromState({ skipRoute = false } = {}) {
-  const status = currentRoom.status;
+  const status = currentRoom?.status;
+  if (!status) return;
   if (!skipRoute) setRoute(routeForStatus(status), { roomCode: currentRoom.room_code });
 
   if (status === 'waiting') { renderLobby(); showScreen('lobby'); }
@@ -574,7 +692,7 @@ function renderLobby() {
   getPlayers().forEach(p => {
     const el = document.importNode(document.getElementById('tpl-player').content, true);
     el.querySelector('.truncate').innerText = p.name + (p.id == currentRoom.host_id ? ' (Host)' : '');
-    el.querySelector('.w-12').innerText = p.name[0].toUpperCase();
+    el.querySelector('.w-12').innerText = (p.name || '?')[0].toUpperCase();
     list.appendChild(el);
   });
   const isHost = currentRoom.host_id == currentUser.id;
@@ -587,9 +705,10 @@ function renderModeSummary() {
   const settings = currentRoom.room_settings || {};
   const mode = settings.mode || 'classic';
   const timerText = mode === 'timed' ? ` · ${settings.timerSeconds || 30}s por ronda` : '';
+  const roundsText = ` · ${Number(settings.maxRounds) || 3} rondas máx.`;
 
   modeSummary.classList.remove('hidden');
-  modeSummary.innerHTML = `<strong>${GAME_MODES[mode]?.label || 'Clásico'}</strong>${timerText}<br><span class="text-gray-400">${getModeDescription(mode)}</span>`;
+  modeSummary.innerHTML = `<strong>${GAME_MODES[mode]?.label || 'Clásico'}</strong>${timerText}${roundsText}<br><span class="text-gray-400">${getModeDescription(mode)}</span>`;
 }
 
 function renderGame() {
@@ -604,25 +723,27 @@ function renderGame() {
   const catEl = document.getElementById('category-display');
   const showCat = currentRoom.room_settings.showCategory;
   if (showCat === 'all' || (showCat === 'civil' && !myData.isInfiltrado)) {
-      catEl.innerText = `Categoría: ${state.category}`;
-      catEl.classList.remove('hidden');
-  } else catEl.classList.add('hidden');
+    catEl.innerText = `Categoría: ${state.category}`;
+    catEl.classList.remove('hidden');
+  } else {
+    catEl.classList.add('hidden');
+  }
 
   document.getElementById('player-word').innerText = myData.eliminated ? 'ELIMINADO' : (myData.word || '???');
-  document.getElementById('game-status').innerText = `RONDA ${state.round || 1}`;
+  document.getElementById('game-status').innerText = `RONDA ${state.round || 1}/${Number(currentRoom.room_settings?.maxRounds) || 3}`;
   document.getElementById('mode-status').innerText = state.modeLabel || getModeLabel(state.mode || 'classic');
   renderTimerStatus();
   animateElement(document.getElementById('word-container'), 'glow-pulse');
 
   const turnList = document.getElementById('turn-list');
   turnList.innerHTML = '';
-  state.turnOrder.forEach(id => {
-      const p = state.players.find(pl => pl.id == id);
-      if (!p) return;
-      const span = document.createElement('span');
-      span.className = `px-3 py-1 rounded-full text-[10px] font-bold ${p.eliminated ? 'bg-gray-800 text-gray-600 line-through' : 'bg-brand/20 text-brand'}`;
-      span.innerText = p.name;
-      turnList.appendChild(span);
+  (state.turnOrder || []).forEach(id => {
+    const p = state.players.find(pl => pl.id == id);
+    if (!p) return;
+    const span = document.createElement('span');
+    span.className = `px-3 py-1 rounded-full text-[10px] font-bold ${p.eliminated ? 'bg-gray-800 text-gray-600 line-through' : 'bg-brand/20 text-brand'}`;
+    span.innerText = p.name;
+    turnList.appendChild(span);
   });
 
   document.getElementById('word-container').classList.remove('hidden');
@@ -663,165 +784,304 @@ function stopTimer() {
 }
 
 function renderVoting() {
-    stopTimer();
-    const myData = currentRoom.game_state.players.find(p => p.id == currentUser.id);
-    if (!myData) {
-      clearPersistedRoom();
-      showScreen('login');
-      return;
+  stopTimer();
+  const myData = currentRoom.game_state.players.find(p => p.id == currentUser.id);
+  if (!myData) {
+    clearPersistedRoom();
+    showScreen('login');
+    return;
+  }
+
+  document.getElementById('word-container').classList.add('hidden');
+  document.getElementById('voting-area').classList.remove('hidden');
+  document.getElementById('btn-show-voting').classList.add('hidden');
+  document.getElementById('game-status').innerText = `VOTACIÓN ${currentRoom.game_state.round || 1}/${Number(currentRoom.room_settings?.maxRounds) || 3}`;
+  document.getElementById('mode-status').innerText = currentRoom.game_state.modeLabel || getModeLabel(currentRoom.game_state.mode || 'classic');
+  document.getElementById('timer-status').classList.add('hidden');
+
+  const votes = currentRoom.game_state.votes || {};
+  const hasVoted = Boolean(votes[currentUser.id]);
+  const grid = document.getElementById('vote-grid');
+  grid.innerHTML = '';
+  currentRoom.game_state.players.forEach(p => {
+    if (p.id == currentUser.id || p.eliminated) return;
+    const el = document.importNode(document.getElementById('tpl-vote-card').content, true);
+    const btn = el.querySelector('button');
+    btn.querySelector('span').innerText = p.name;
+    btn.querySelector('.w-16').innerText = (p.name || '?')[0].toUpperCase();
+
+    if (myData.eliminated || hasVoted) {
+      btn.disabled = true;
+      btn.classList.add('voted');
+    } else {
+      btn.onclick = () => castVote(p.id, btn);
     }
 
-    document.getElementById('word-container').classList.add('hidden');
-    document.getElementById('voting-area').classList.remove('hidden');
-    document.getElementById('btn-show-voting').classList.add('hidden');
-    document.getElementById('mode-status').innerText = currentRoom.game_state.modeLabel || getModeLabel(currentRoom.game_state.mode || 'classic');
-    document.getElementById('timer-status').classList.add('hidden');
-
-    const grid = document.getElementById('vote-grid');
-    grid.innerHTML = '';
-    currentRoom.game_state.players.forEach(p => {
-        if (p.id == currentUser.id || p.eliminated) return;
-        const el = document.importNode(document.getElementById('tpl-vote-card').content, true);
-        const btn = el.querySelector('button');
-        btn.querySelector('span').innerText = p.name;
-        btn.querySelector('.w-16').innerText = p.name[0].toUpperCase();
-        if (myData.eliminated) btn.classList.add('pointer-events-none', 'opacity-50');
-        else btn.onclick = () => castVote(p.id, btn);
-
-        if (currentRoom.game_state.votes && currentRoom.game_state.votes[currentUser.id] == p.id) btn.classList.add('selected');
-        grid.appendChild(el);
-    });
+    if (votes[currentUser.id] == p.id) btn.classList.add('selected');
+    grid.appendChild(el);
+  });
 }
 
 function renderResults() {
-    stopTimer();
-    const state = currentRoom.game_state;
-    const resultsList = document.getElementById('results-list');
-    resultsList.innerHTML = '';
-    const infiltrados = state.players.filter(p => p.isInfiltrado);
-    document.getElementById('results-winner').innerText = state.winner === 'infiltrado' ? '¡GANAN LOS INFILTRADOS!' : '¡CIVILES GANAN!';
-    animateElement(document.getElementById('results-winner'), 'glow-pulse');
-    feedback('reveal');
+  stopTimer();
+  const state = currentRoom.game_state;
+  const resultsList = document.getElementById('results-list');
+  resultsList.innerHTML = '';
+  const infiltrados = state.players.filter(p => p.isInfiltrado);
+  document.getElementById('results-winner').innerText = state.winner === 'infiltrado' ? '¡GANAN LOS INFILTRADOS!' : '¡CIVILES GANAN!';
+  animateElement(document.getElementById('results-winner'), 'glow-pulse');
+  feedback('reveal');
 
-    const info = document.createElement('p');
-    info.className = 'text-center text-gray-400 mb-4';
-    info.innerText = infiltrados.length
-      ? `Infiltrado${infiltrados.length > 1 ? 's' : ''}: ${infiltrados.map(p => `${p.name} (${p.word || 'NADA'})`).join(', ')}`
-      : 'No se encontró al infiltrado.';
-    resultsList.appendChild(info);
+  const info = document.createElement('p');
+  info.className = 'text-center text-gray-400 mb-4';
+  info.innerText = infiltrados.length
+    ? `Infiltrado${infiltrados.length > 1 ? 's' : ''}: ${infiltrados.map(p => `${p.name} (${p.word || 'NADA'})`).join(', ')}`
+    : 'No se encontró al infiltrado.';
+  resultsList.appendChild(info);
 
-    [...state.players].sort((a,b) => b.points - a.points).forEach(p => {
-        const div = document.createElement('div');
-        div.className = 'flex justify-between bg-gray-900 p-4 rounded-xl';
-        div.innerHTML = `<span>${p.name}</span><span class="font-bold text-brand">${p.points} pts</span>`;
-        resultsList.appendChild(div);
+  if (state.winnerReason) {
+    const reason = document.createElement('p');
+    reason.className = 'text-center text-xs text-gray-500 mb-4 uppercase tracking-widest';
+    reason.innerText = state.winnerReason;
+    resultsList.appendChild(reason);
+  }
+
+  [...state.players].sort((a, b) => (b.points || 0) - (a.points || 0)).forEach(p => {
+    const div = document.createElement('div');
+    div.className = 'flex justify-between bg-gray-900 p-4 rounded-xl';
+    div.innerHTML = `<span>${p.name}</span><span class="font-bold text-brand">${p.points || 0} pts</span>`;
+    resultsList.appendChild(div);
+  });
+}
+
+function buildStartGamePayload(players) {
+  const pairIndex = Math.floor(Math.random() * palabras.length);
+  const pair = palabras[pairIndex];
+  const roundState = createRoundState(players, currentRoom.room_settings, pair, palabras);
+
+  return {
+    minPlayers: MIN_PLAYERS,
+    pairIndex,
+    wordPair: pair,
+    wordPairs: palabras,
+    proposedState: {
+      ...currentRoom.game_state,
+      ...roundState,
+      round: 1,
+      votes: {},
+      winner: null,
+      winnerReason: null
+    }
+  };
+}
+
+
+function resolveVotingState(state, votes) {
+  const voters = getAlivePlayers(state.players);
+
+  if (Object.keys(votes).length < voters.length) {
+    return {
+      status: 'voting',
+      gameState: { ...state, votes }
+    };
+  }
+
+  const counts = {};
+  Object.values(votes).forEach(id => {
+    counts[id] = (counts[id] || 0) + 1;
+  });
+
+  const maxVotes = Math.max(...Object.values(counts));
+  const tied = Object.keys(counts).filter(id => counts[id] === maxVotes);
+  const eliminatedId = tied[Math.floor(Math.random() * tied.length)];
+  const players = state.players.map(player =>
+    player.id == eliminatedId ? { ...player, eliminated: true } : { ...player }
+  );
+
+  let status = 'playing';
+  let winner = null;
+  let winnerReason = null;
+  const infiltrados = players.filter(player => player.isInfiltrado);
+  const infiltradosAlive = infiltrados.filter(player => !player.eliminated).length;
+  const civiliansAlive = players.filter(player => !player.isInfiltrado && !player.eliminated).length;
+  const round = Number(state.round) || 1;
+  const maxRounds = Number(currentRoom.room_settings?.maxRounds) || 3;
+
+  if (infiltradosAlive === 0) {
+    winner = 'civiles';
+    status = 'results';
+    winnerReason = 'El infiltrado ha sido descubierto';
+    players.filter(player => !player.isInfiltrado).forEach(player => {
+      player.points = (Number(player.points) || 0) + 1;
     });
+  } else if (civiliansAlive <= infiltradosAlive) {
+    winner = 'infiltrado';
+    status = 'results';
+    winnerReason = 'Los infiltrados igualan o superan a los civiles';
+    infiltrados.filter(player => !player.eliminated).forEach(player => {
+      player.points = (Number(player.points) || 0) + 2;
+    });
+  } else if (round >= maxRounds) {
+    winner = 'infiltrado';
+    status = 'results';
+    winnerReason = `Se alcanzó el límite de ${maxRounds} ronda${maxRounds === 1 ? '' : 's'}`;
+    infiltrados.filter(player => !player.eliminated).forEach(player => {
+      player.points = (Number(player.points) || 0) + 2;
+    });
+  }
+
+  return {
+    status,
+    gameState: {
+      ...state,
+      players,
+      votes: status === 'playing' ? {} : votes,
+      winner,
+      winnerReason,
+      round: status === 'playing' ? round + 1 : round,
+      roundStartedAt: status === 'playing' ? Date.now() : state.roundStartedAt
+    }
+  };
 }
 
 async function startGame() {
-    feedback('click');
-    const players = getPlayers();
+  feedback('click');
+  const players = getPlayers();
 
-    if (currentRoom.host_id != currentUser.id) {
-      feedback('error');
-      alert('Solo el host puede comenzar la partida');
-      return;
-    }
+  if (currentRoom.host_id != currentUser.id) {
+    feedback('error');
+    alert('Solo el host puede comenzar la partida');
+    return;
+  }
 
-    if (players.length < MIN_PLAYERS) {
-      feedback('error');
-      alert(`Se necesitan al menos ${MIN_PLAYERS} jugadores`);
-      return;
-    }
+  if (players.length < MIN_PLAYERS) {
+    feedback('error');
+    alert(`Se necesitan al menos ${MIN_PLAYERS} jugadores`);
+    return;
+  }
 
-    if ((currentRoom.room_settings?.mode || 'classic') === 'double' && players.length < 6) {
-      feedback('error');
-      alert('El modo doble infiltrado necesita al menos 6 jugadores');
-      return;
-    }
+  if ((currentRoom.room_settings?.mode || 'classic') === 'double' && players.length < 6) {
+    feedback('error');
+    alert('El modo doble infiltrado necesita al menos 6 jugadores');
+    return;
+  }
 
-    const pair = palabras[Math.floor(Math.random() * palabras.length)];
-    const roundState = createRoundState(players, currentRoom.room_settings, pair, palabras);
-
-    await api.updateRoomState(currentRoom.room_code, {
-        status: 'playing',
-        gameState: { ...currentRoom.game_state, ...roundState }
+  try {
+    const payload = buildStartGamePayload(players);
+    await patchRoomState({
+      status: 'playing',
+      gameState: payload.proposedState
     });
+  } catch (error) {
+    console.error(error);
+    feedback('error');
+    alert('No se pudo comenzar la partida');
+  }
 }
 
 async function goToVoting() {
-    feedback('click');
+  feedback('click');
 
-    if (currentRoom.host_id != currentUser.id) {
-      feedback('error');
-      alert('Solo el host puede iniciar la votación');
-      return;
-    }
+  if (currentRoom.host_id != currentUser.id) {
+    feedback('error');
+    alert('Solo el host puede iniciar la votación');
+    return;
+  }
 
-    await api.updateRoomState(currentRoom.room_code, { status: 'voting', gameState: { ...currentRoom.game_state, votes: {} } });
+  try {
+    await patchRoomState({
+      status: 'voting',
+      gameState: { ...currentRoom.game_state, votes: {} }
+    });
+  } catch (error) {
+    console.error(error);
+    feedback('error');
+    alert('No se pudo iniciar la votación');
+  }
 }
 
 async function castVote(targetId, button) {
-    if (currentRoom.game_state.votes && currentRoom.game_state.votes[currentUser.id]) return;
-    feedback('vote');
-    button?.classList.add('selected');
+  if (voteSubmitting) return;
 
-    const votes = { ...currentRoom.game_state.votes, [currentUser.id]: targetId };
-    const voters = currentRoom.game_state.players.filter(p => !p.eliminated); // Solo votan los vivos
+  const state = currentRoom.game_state;
+  const myPlayer = state.players.find(player => player.id == currentUser.id);
 
-    if (Object.keys(votes).length >= voters.length) {
-        const counts = {};
-        Object.values(votes).forEach(v => counts[v] = (counts[v] || 0) + 1);
-        const maxVotes = Math.max(...Object.values(counts));
-        const tied = Object.keys(counts).filter(id => counts[id] === maxVotes);
-        const eliminatedId = tied[Math.floor(Math.random() * tied.length)];
+  if (!myPlayer || myPlayer.eliminated || state.votes?.[currentUser.id]) return;
 
-        const players = currentRoom.game_state.players;
-        const target = players.find(p => p.id == eliminatedId);
-        target.eliminated = true;
+  const target = state.players.find(player => player.id == targetId && !player.eliminated);
+  if (!target) {
+    feedback('error');
+    return;
+  }
 
-        let status = 'playing';
-        let winner = null;
-        const infiltrados = players.filter(p => p.isInfiltrado);
-        const infiltradosAlive = infiltrados.filter(p => !p.eliminated).length;
-        const civiliansAlive = players.filter(p => !p.isInfiltrado && !p.eliminated).length;
+  voteSubmitting = true;
+  feedback('vote');
+  button?.classList.add('selected');
+  document.querySelectorAll('.vote-card').forEach(btn => {
+    btn.disabled = true;
+    btn.classList.add('voted');
+  });
 
-        if (infiltradosAlive === 0) {
-            winner = 'civiles';
-            status = 'results';
-            players.filter(p => !p.isInfiltrado).forEach(p => p.points++);
-        } else if (civiliansAlive <= infiltradosAlive) {
-            winner = 'infiltrado';
-            status = 'results';
-            infiltrados.filter(p => !p.eliminated).forEach(p => p.points += 2);
-        }
+  try {
+    await refreshRoom();
+    const freshState = currentRoom.game_state;
+    const freshPlayer = freshState.players.find(player => player.id == currentUser.id);
 
-        await api.updateRoomState(currentRoom.room_code, {
-            status,
-            gameState: { ...currentRoom.game_state, players, votes, winner, round: status === 'playing' ? currentRoom.game_state.round + 1 : currentRoom.game_state.round }
-        });
-    } else {
-        await api.updateRoomState(currentRoom.room_code, { gameState: { ...currentRoom.game_state, votes } });
-    }
+    if (!freshPlayer || freshPlayer.eliminated || freshState.votes?.[currentUser.id]) return;
+
+    const votes = { ...(freshState.votes || {}), [currentUser.id]: targetId };
+    await patchRoomState(resolveVotingState(freshState, votes));
+  } catch (error) {
+    console.error(error);
+    feedback('error');
+    alert('No se pudo registrar el voto');
+    await refreshRoom();
+  } finally {
+    voteSubmitting = false;
+  }
 }
 
 async function backToLobby() {
-    feedback('click');
+  feedback('click');
 
-    if (currentRoom.host_id != currentUser.id) {
-      feedback('error');
-      alert('Solo el host puede volver al lobby');
-      return;
-    }
+  if (currentRoom.host_id != currentUser.id) {
+    feedback('error');
+    alert('Solo el host puede volver al lobby');
+    return;
+  }
 
-    await api.updateRoomState(currentRoom.room_code, { status: 'waiting' });
+  await createRematchRoom();
+}
+
+async function createRematchRoom() {
+  const oldRoom = currentRoom;
+  const players = oldRoom.game_state.players.map(player => buildLobbyPlayer(player, { isHost: player.id == oldRoom.host_id }));
+
+  try {
+    const res = await api.createRoom(GAME_ID, oldRoom.host_id, oldRoom.room_settings, {
+      status: 'waiting',
+      players
+    });
+
+    currentRoom = res;
+    persistRoom(res.room_code);
+    initSocket(res.room_code);
+    feedback('success');
+    setRoute('sala', { roomCode: res.room_code });
+    updateUIFromState({ skipRoute: true });
+    alert(`Nueva sala creada: ${res.room_code}. Comparte el enlace con el grupo.`);
+  } catch (error) {
+    console.error(error);
+    feedback('error');
+    alert('No se pudo crear una nueva sala');
+  }
 }
 
 function shareRoom() {
-    feedback('click');
-    const url = getRoomUrl();
-    if (navigator.share) navigator.share({ title: 'Infiltrado', text: getShareText(), url });
-    else copyRoomLink();
+  feedback('click');
+  const url = getRoomUrl();
+  if (navigator.share) navigator.share({ title: 'Infiltrado', text: getShareText(), url });
+  else copyRoomLink();
 }
 
 function shareRoomOnWhatsApp() {

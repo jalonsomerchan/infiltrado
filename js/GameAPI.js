@@ -3,7 +3,7 @@
  */
 export default class GameAPI {
   constructor(baseURL = 'https://alon.one/juegos/api') {
-    this.baseURL = baseURL.replace(/\/$/, ''); // Limpiar slash final si existe
+    this.baseURL = baseURL.replace(/\/$/, '');
   }
 
   /**
@@ -18,17 +18,19 @@ export default class GameAPI {
       }
     };
 
-    if (data) {
-      options.body = JSON.stringify(data);
-    }
+    if (data) options.body = JSON.stringify(data);
 
     try {
       const response = await fetch(`${this.baseURL}/${endpoint}`, options);
-      const result = await response.json();
-      
+      const contentType = response.headers.get('content-type') || '';
+      const result = contentType.includes('application/json')
+        ? await response.json()
+        : { error: await response.text() };
+
       if (!response.ok) {
         throw new Error(result.error || `Error: ${response.status}`);
       }
+
       return result;
     } catch (error) {
       console.error(`API Error (${method} ${endpoint}):`, error);
@@ -76,40 +78,13 @@ export default class GameAPI {
     return this._request(`rooms/${roomCode}/join`, 'POST', { user_id: userId });
   }
 
-  /**
-   * Envía una acción de juego para que el servidor valide permisos y genere el nuevo estado.
-   *
-   * Endpoint recomendado para cerrar la vulnerabilidad de la issue #8:
-   * el cliente pide "qué quiere hacer" y el backend decide si puede hacerlo.
-   */
-  async sendRoomAction(roomCode, action, actorId, payload = {}, expectedStateVersion = null) {
-    const body = {
-      action,
-      actor_id: actorId,
-      payload
-    };
-
-    if (expectedStateVersion !== null) {
-      body.expected_state_version = expectedStateVersion;
-    }
-
-    return this._request(`rooms/${roomCode}/actions`, 'POST', body);
-  }
-
-  /**
-   * @deprecated Evitar usar este método para acciones de juego públicas.
-   *
-   * Este endpoint permite enviar parches completos de estado desde cliente y solo es seguro
-   * si el backend valida permisos, campos permitidos y recalcula ganador/eliminados/puntos.
-   * Para producción, usar sendRoomAction() con acciones como start_game, start_voting,
-   * cast_vote o back_to_lobby.
-   */
+  /** Actualiza el estado de una sala mediante el endpoint real disponible. */
   async updateRoomState(roomCode, { gameState, status, roomSettings }) {
     const payload = {};
     if (gameState) payload.game_state = gameState;
     if (status) payload.status = status;
     if (roomSettings) payload.room_settings = roomSettings;
-    
+
     return this._request(`rooms/${roomCode}/state`, 'PATCH', payload);
   }
 
@@ -122,7 +97,7 @@ export default class GameAPI {
       game_id: gameId,
       room_id: roomId,
       score_value: scoreValue,
-      metadata: metadata
+      metadata
     });
   }
 }

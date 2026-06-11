@@ -4,7 +4,7 @@ const palabras = [
     { "categoria": "Transporte", "palabras": ["Coche", "Camión"] },
     { "categoria": "Deportes", "palabras": ["Fútbol", "Baloncesto"] },
     { "categoria": "Música", "palabras": ["Guitarra", "Bajo"] },
-    { "categoria": "Comida", "palabras": ["Pizza", "Hamburgesa"] },
+    { "categoria": "Comida", "palabras": ["Pizza", "Hamburguesa"] },
     { "categoria": "Bebidas", "palabras": ["Coca-Cola", "Pepsi"] },
     { "categoria": "Tecnología", "palabras": ["iPhone", "Android"] },
     { "categoria": "Películas", "palabras": ["Star Wars", "Star Trek"] },

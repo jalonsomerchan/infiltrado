@@ -20,8 +20,16 @@
   <style>
     .screen { display: none; }
     .screen.active { display: flex; }
-    .vote-card.selected { @apply ring-4 ring-brand scale-105; }
-    .vote-card.voted { @apply opacity-50 pointer-events-none; }
+    .vote-card.selected {
+      transform: scale(1.05);
+      border-color: #7C3AED;
+      box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.95), 0 18px 32px rgba(124, 58, 237, 0.2);
+    }
+    .vote-card.voted,
+    .vote-card:disabled {
+      opacity: .5;
+      pointer-events: none;
+    }
     @keyframes pop { 0%{transform:scale(0.5);opacity:0} 70%{transform:scale(1.1)} 100%{transform:scale(1);opacity:1} }
     .pop { animation: pop .35s ease forwards; }
     @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-6px)} 75%{transform:translateX(6px)} }
@@ -34,20 +42,17 @@
 </head>
 <body class="h-full bg-gray-950 text-white font-game select-none">
 
-  <!-- Main Container -->
   <main id="app" class="h-full max-w-md mx-auto p-6 flex flex-col items-center justify-center">
-    
-    <!-- Login Screen -->
     <section id="screen-login" class="screen active flex-col items-center w-full gap-8 pop">
       <div class="text-center">
         <h1 class="text-6xl font-black italic tracking-tighter text-brand drop-shadow-[0_0_15px_rgba(124,58,237,0.5)]">INFILTRADO</h1>
         <p class="text-gray-400 mt-2 font-medium tracking-wide">¿Quién no encaja?</p>
       </div>
-      
+
       <div class="w-full space-y-4">
-        <input id="login-username" type="text" placeholder="Tu nombre..." 
+        <input id="login-username" type="text" placeholder="Tu nombre..."
           class="w-full bg-gray-900 border-2 border-gray-800 rounded-2xl p-4 text-center text-xl font-bold focus:border-brand transition-all outline-none" />
-        
+
         <div id="login-actions" class="grid grid-cols-2 gap-4">
           <button id="btn-create-init" class="bg-brand hover:bg-brand-dark rounded-2xl p-4 font-black uppercase tracking-widest transition-all">
             Crear Sala
@@ -58,96 +63,95 @@
         </div>
 
         <div id="join-container" class="hidden space-y-4 pt-4 border-t border-gray-800">
-            <input id="join-code" type="text" placeholder="CÓDIGO" maxlength="6"
-                class="w-full bg-gray-900 border-2 border-gray-800 rounded-2xl p-4 text-center text-2xl font-black tracking-[0.5em] focus:border-brand transition-all outline-none uppercase" />
-            <button id="btn-join-confirm" class="w-full bg-brand rounded-2xl p-4 font-black uppercase tracking-widest">
-                Entrar a la sala
-            </button>
+          <input id="join-code" type="text" placeholder="CÓDIGO" maxlength="6"
+            class="w-full bg-gray-900 border-2 border-gray-800 rounded-2xl p-4 text-center text-2xl font-black tracking-[0.5em] focus:border-brand transition-all outline-none uppercase" />
+          <button id="btn-join-confirm" class="w-full bg-brand rounded-2xl p-4 font-black uppercase tracking-widest">
+            Entrar a la sala
+          </button>
         </div>
 
         <div id="config-container" class="hidden space-y-4 pt-4 border-t border-gray-800">
-            <h3 class="text-center font-bold text-gray-500 uppercase text-sm tracking-widest">Configuración de partida</h3>
-            <div class="bg-gray-900 p-4 rounded-2xl space-y-4">
-                <div class="space-y-2">
-                    <div class="flex justify-between items-center">
-                        <span class="font-bold">Modo</span>
-                        <select id="config-mode" class="bg-gray-800 rounded-lg p-2 outline-none">
-                            <option value="classic">Clásico</option>
-                            <option value="blind">Infiltrado ciego</option>
-                            <option value="double">Doble infiltrado</option>
-                            <option value="chaos">Caos</option>
-                            <option value="timed">Contrarreloj</option>
-                        </select>
-                    </div>
-                    <p id="mode-description" class="text-xs text-gray-400 leading-relaxed">Un infiltrado recibe una palabra similar y el resto recibe la palabra civil.</p>
-                    <details class="bg-gray-950/70 border border-gray-800 rounded-2xl p-3 text-xs text-gray-400">
-                        <summary class="cursor-pointer select-none font-black uppercase tracking-widest text-brand">Ver diferencias entre modos</summary>
-                        <div class="mt-3 space-y-3">
-                            <div class="rounded-xl bg-gray-900/80 p-3 border border-gray-800">
-                                <div class="font-black text-white">Clásico</div>
-                                <p>La experiencia base: una persona es infiltrada y recibe una palabra parecida o nada, según la configuración.</p>
-                                <p class="mt-1 text-gray-500"><strong>Ideal para:</strong> primeras partidas y grupos pequeños.</p>
-                            </div>
-                            <div class="rounded-xl bg-gray-900/80 p-3 border border-gray-800">
-                                <div class="font-black text-white">Infiltrado ciego</div>
-                                <p>El infiltrado no ve ninguna palabra, así que debe improvisar escuchando a los demás.</p>
-                                <p class="mt-1 text-gray-500"><strong>Ideal para:</strong> partidas más tensas y jugadores con experiencia.</p>
-                            </div>
-                            <div class="rounded-xl bg-gray-900/80 p-3 border border-gray-800">
-                                <div class="font-black text-white">Doble infiltrado</div>
-                                <p>Hay dos infiltrados. Ganan si quedan tantos infiltrados vivos como civiles.</p>
-                                <p class="mt-1 text-gray-500"><strong>Requisito:</strong> mínimo 6 jugadores. <strong>Ideal para:</strong> grupos grandes.</p>
-                            </div>
-                            <div class="rounded-xl bg-gray-900/80 p-3 border border-gray-800">
-                                <div class="font-black text-white">Caos</div>
-                                <p>El infiltrado recibe una palabra de otra categoría, no solo una palabra parecida.</p>
-                                <p class="mt-1 text-gray-500"><strong>Ideal para:</strong> partidas imprevisibles y más difíciles de leer.</p>
-                            </div>
-                            <div class="rounded-xl bg-gray-900/80 p-3 border border-gray-800">
-                                <div class="font-black text-white">Contrarreloj</div>
-                                <p>Funciona como el modo clásico, pero con temporizador visible para acelerar las descripciones.</p>
-                                <p class="mt-1 text-gray-500"><strong>Ideal para:</strong> partidas rápidas, móviles y grupos que se enrollan mucho.</p>
-                            </div>
-                        </div>
-                    </details>
+          <h3 class="text-center font-bold text-gray-500 uppercase text-sm tracking-widest">Configuración de partida</h3>
+          <div class="bg-gray-900 p-4 rounded-2xl space-y-4">
+            <div class="space-y-2">
+              <div class="flex justify-between items-center">
+                <span class="font-bold">Modo</span>
+                <select id="config-mode" class="bg-gray-800 rounded-lg p-2 outline-none">
+                  <option value="classic">Clásico</option>
+                  <option value="blind">Infiltrado ciego</option>
+                  <option value="double">Doble infiltrado</option>
+                  <option value="chaos">Caos</option>
+                  <option value="timed">Contrarreloj</option>
+                </select>
+              </div>
+              <p id="mode-description" class="text-xs text-gray-400 leading-relaxed">Un infiltrado recibe una palabra similar y el resto recibe la palabra civil.</p>
+              <details class="bg-gray-950/70 border border-gray-800 rounded-2xl p-3 text-xs text-gray-400">
+                <summary class="cursor-pointer select-none font-black uppercase tracking-widest text-brand">Ver diferencias entre modos</summary>
+                <div class="mt-3 space-y-3">
+                  <div class="rounded-xl bg-gray-900/80 p-3 border border-gray-800">
+                    <div class="font-black text-white">Clásico</div>
+                    <p>La experiencia base: una persona es infiltrada y recibe una palabra parecida o nada, según la configuración.</p>
+                    <p class="mt-1 text-gray-500"><strong>Ideal para:</strong> primeras partidas y grupos pequeños.</p>
+                  </div>
+                  <div class="rounded-xl bg-gray-900/80 p-3 border border-gray-800">
+                    <div class="font-black text-white">Infiltrado ciego</div>
+                    <p>El infiltrado no ve ninguna palabra, así que debe improvisar escuchando a los demás.</p>
+                    <p class="mt-1 text-gray-500"><strong>Ideal para:</strong> partidas más tensas y jugadores con experiencia.</p>
+                  </div>
+                  <div class="rounded-xl bg-gray-900/80 p-3 border border-gray-800">
+                    <div class="font-black text-white">Doble infiltrado</div>
+                    <p>Hay dos infiltrados. Ganan si quedan tantos infiltrados vivos como civiles.</p>
+                    <p class="mt-1 text-gray-500"><strong>Requisito:</strong> mínimo 6 jugadores. <strong>Ideal para:</strong> grupos grandes.</p>
+                  </div>
+                  <div class="rounded-xl bg-gray-900/80 p-3 border border-gray-800">
+                    <div class="font-black text-white">Caos</div>
+                    <p>El infiltrado recibe una palabra de otra categoría, no solo una palabra parecida.</p>
+                    <p class="mt-1 text-gray-500"><strong>Ideal para:</strong> partidas imprevisibles y más difíciles de leer.</p>
+                  </div>
+                  <div class="rounded-xl bg-gray-900/80 p-3 border border-gray-800">
+                    <div class="font-black text-white">Contrarreloj</div>
+                    <p>Funciona como el modo clásico, pero con temporizador visible para acelerar las descripciones.</p>
+                    <p class="mt-1 text-gray-500"><strong>Ideal para:</strong> partidas rápidas, móviles y grupos que se enrollan mucho.</p>
+                  </div>
                 </div>
-                <div class="flex justify-between items-center">
-                    <span class="font-bold">Infiltrado recibe</span>
-                    <select id="config-infiltrado-word" class="bg-gray-800 rounded-lg p-2 outline-none">
-                        <option value="similar">Palabra Similar</option>
-                        <option value="none">Nada (En blanco)</option>
-                    </select>
-                </div>
-                <div id="timer-config" class="hidden flex justify-between items-center">
-                    <span class="font-bold">Tiempo</span>
-                    <select id="config-timer" class="bg-gray-800 rounded-lg p-2 outline-none">
-                        <option value="20">20 segundos</option>
-                        <option value="30" selected>30 segundos</option>
-                        <option value="45">45 segundos</option>
-                        <option value="60">60 segundos</option>
-                    </select>
-                </div>
-                <div class="flex justify-between items-center">
-                    <span class="font-bold">Mostrar Categoría</span>
-                    <select id="config-show-category" class="bg-gray-800 rounded-lg p-2 outline-none">
-                        <option value="all">A todos</option>
-                        <option value="civil">Solo Civiles</option>
-                        <option value="none">A nadie</option>
-                    </select>
-                </div>
-                <div class="flex justify-between items-center">
-                    <span class="font-bold">Rondas</span>
-                    <input id="config-rounds" type="number" value="3" min="1" max="10" class="w-16 bg-gray-800 rounded-lg p-2 text-center" />
-                </div>
+              </details>
             </div>
-            <button id="btn-create-confirm" class="w-full bg-brand rounded-2xl p-4 font-black uppercase tracking-widest">
-                Crear Sala
-            </button>
+            <div class="flex justify-between items-center">
+              <span class="font-bold">Infiltrado recibe</span>
+              <select id="config-infiltrado-word" class="bg-gray-800 rounded-lg p-2 outline-none">
+                <option value="similar">Palabra Similar</option>
+                <option value="none">Nada (En blanco)</option>
+              </select>
+            </div>
+            <div id="timer-config" class="hidden flex justify-between items-center">
+              <span class="font-bold">Tiempo</span>
+              <select id="config-timer" class="bg-gray-800 rounded-lg p-2 outline-none">
+                <option value="20">20 segundos</option>
+                <option value="30" selected>30 segundos</option>
+                <option value="45">45 segundos</option>
+                <option value="60">60 segundos</option>
+              </select>
+            </div>
+            <div class="flex justify-between items-center">
+              <span class="font-bold">Mostrar Categoría</span>
+              <select id="config-show-category" class="bg-gray-800 rounded-lg p-2 outline-none">
+                <option value="all">A todos</option>
+                <option value="civil">Solo Civiles</option>
+                <option value="none">A nadie</option>
+              </select>
+            </div>
+            <div class="flex justify-between items-center">
+              <span class="font-bold">Rondas</span>
+              <input id="config-rounds" type="number" value="3" min="1" max="10" class="w-16 bg-gray-800 rounded-lg p-2 text-center" />
+            </div>
+          </div>
+          <button id="btn-create-confirm" class="w-full bg-brand rounded-2xl p-4 font-black uppercase tracking-widest">
+            Crear Sala
+          </button>
         </div>
       </div>
     </section>
 
-    <!-- Lobby Screen -->
     <section id="screen-lobby" class="screen flex-col items-center w-full gap-6">
       <div class="w-full flex justify-between items-center bg-gray-900/50 p-4 rounded-2xl">
         <div>
@@ -170,23 +174,15 @@
           </div>
         </div>
         <div class="grid grid-cols-3 gap-2">
-          <button id="btn-whatsapp" class="bg-green-600 hover:bg-green-700 rounded-xl p-3 text-xs font-black uppercase tracking-wider transition-all">
-            WhatsApp
-          </button>
-          <button id="btn-copy-code" class="bg-gray-800 hover:bg-gray-700 rounded-xl p-3 text-xs font-black uppercase tracking-wider transition-all">
-            Código
-          </button>
-          <button id="btn-copy-link" class="bg-gray-800 hover:bg-gray-700 rounded-xl p-3 text-xs font-black uppercase tracking-wider transition-all">
-            Enlace
-          </button>
+          <button id="btn-whatsapp" class="bg-green-600 hover:bg-green-700 rounded-xl p-3 text-xs font-black uppercase tracking-wider transition-all">WhatsApp</button>
+          <button id="btn-copy-code" class="bg-gray-800 hover:bg-gray-700 rounded-xl p-3 text-xs font-black uppercase tracking-wider transition-all">Código</button>
+          <button id="btn-copy-link" class="bg-gray-800 hover:bg-gray-700 rounded-xl p-3 text-xs font-black uppercase tracking-wider transition-all">Enlace</button>
         </div>
       </div>
 
       <div id="mode-summary" class="w-full bg-brand/10 border border-brand/30 rounded-2xl p-4 text-sm text-gray-300 hidden"></div>
 
-      <div class="w-full flex-1 overflow-y-auto space-y-3 py-4" id="players-list">
-        <!-- Players items -->
-      </div>
+      <div class="w-full flex-1 overflow-y-auto space-y-3 py-4" id="players-list"></div>
 
       <div class="w-full space-y-3" id="admin-controls">
         <button id="btn-start" class="w-full bg-brand hover:bg-brand-dark rounded-2xl p-4 text-xl font-black uppercase tracking-widest transition-all shadow-lg shadow-brand/20">
@@ -198,7 +194,6 @@
       </div>
     </section>
 
-    <!-- Game Screen -->
     <section id="screen-game" class="screen flex-col items-center w-full gap-6">
       <div class="w-full text-center space-y-4">
         <div class="flex justify-center gap-2 flex-wrap">
@@ -211,32 +206,27 @@
           <p class="text-gray-400 text-sm uppercase tracking-widest mb-2 font-bold">Tu palabra es:</p>
           <h2 id="player-word" class="text-4xl font-black tracking-tight uppercase">??????</h2>
         </div>
-        
+
         <div id="turn-order-container" class="w-full bg-gray-900/50 p-4 rounded-2xl border border-gray-800">
-            <p class="text-[10px] uppercase text-gray-500 font-black mb-3 text-center">Orden de descripción</p>
-            <div id="turn-list" class="flex flex-wrap justify-center gap-2">
-                <!-- Players list -->
-            </div>
+          <p class="text-[10px] uppercase text-gray-500 font-black mb-3 text-center">Orden de descripción</p>
+          <div id="turn-list" class="flex flex-wrap justify-center gap-2"></div>
         </div>
       </div>
 
       <div id="voting-area" class="w-full flex-1 overflow-y-auto hidden">
         <h3 class="text-xl font-black text-center mb-4 text-gray-400 uppercase tracking-widest">¿Quién es el infiltrado?</h3>
-        <div id="vote-grid" class="grid grid-cols-2 gap-4 pb-4">
-          <!-- Players cards for voting -->
-        </div>
+        <div id="vote-grid" class="grid grid-cols-2 gap-4 pb-4"></div>
       </div>
 
       <div id="turn-info" class="text-center text-gray-400 italic">
         ¡Describe tu palabra sin decirla!
       </div>
-      
+
       <button id="btn-show-voting" class="w-full bg-brand/20 hover:bg-brand/30 border-2 border-brand text-brand rounded-2xl p-4 font-black uppercase tracking-widest transition-all hidden">
         Ir a Votación
       </button>
     </section>
 
-    <!-- Results Screen -->
     <section id="screen-results" class="screen flex-col items-center w-full gap-6">
       <h2 class="text-4xl font-black italic tracking-tighter text-brand">RESULTADOS</h2>
       <div id="results-winner" class="text-2xl font-bold text-center py-4"></div>
@@ -245,14 +235,11 @@
         Volver al Lobby
       </button>
     </section>
-
   </main>
 
   <template id="tpl-player">
     <div class="flex items-center gap-4 bg-gray-900/50 p-4 rounded-2xl border-2 border-transparent transition-all">
-      <div class="w-12 h-12 rounded-xl bg-brand/20 flex items-center justify-center font-black text-brand text-xl">
-        A
-      </div>
+      <div class="w-12 h-12 rounded-xl bg-brand/20 flex items-center justify-center font-black text-brand text-xl">A</div>
       <div class="flex-1 font-bold truncate">Username</div>
       <div class="status-indicator w-3 h-3 rounded-full bg-gray-800"></div>
     </div>
@@ -260,14 +247,11 @@
 
   <template id="tpl-vote-card">
     <button class="vote-card flex flex-col items-center gap-3 bg-gray-900 border-2 border-gray-800 p-4 rounded-2xl transition-all hover:border-brand/50">
-      <div class="w-16 h-16 rounded-2xl bg-brand/10 flex items-center justify-center font-black text-brand text-2xl">
-        U
-      </div>
+      <div class="w-16 h-16 rounded-2xl bg-brand/10 flex items-center justify-center font-black text-brand text-2xl">U</div>
       <span class="font-bold text-sm truncate w-full text-center">Username</span>
     </button>
   </template>
 
-  <!-- Scripts -->
   <script src="js/game.js" type="module"></script>
 </body>
 </html>
