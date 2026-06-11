@@ -1,25 +1,28 @@
-# Cambios aplicados
+# Cambios incluidos
 
 ## Sincronización de sala
 
-- Se mantiene el uso de `https://esm.sh/itty-sockets`.
-- Se elimina cualquier dependencia de endpoints WebSocket propios.
-- Se abre el canal IttySockets en cuanto el jugador entra en la sala, antes de modificar el estado compartido.
-- Al unirse un jugador se emite `player_joined` y, al cambiar el estado, se emiten `state_updated` y `room_changed`.
-- El wrapper de IttySockets ahora soporta varias formas de API: `send`, `emit`, `publish`, `on`, `addEventListener` y propiedades `onmessage`/`onclose`.
-- Se añade una reconciliación automática cada 2 segundos mientras se está dentro de una sala para evitar que la partida se quede congelada si el socket no entrega algún evento.
-- La reconciliación solo repinta la UI cuando el estado recibido cambia, para no reanimar la pantalla constantemente.
+- Se mantiene `itty-sockets` desde `https://esm.sh/itty-sockets`.
+- Se eliminan rutas WebSocket inventadas: no hay `wss://alon.one/...`.
+- Cada cambio de estado emite eventos ligeros por IttySockets (`state_updated`, `room_changed`, `player_joined`).
+- Los clientes que reciben eventos hacen una reconciliación real con `GET /rooms/{code}` para evitar estados parciales.
+- Se añade refresco de respaldo cada 1s dentro de la sala para que el lobby, el inicio de partida, la palabra y la votación se actualicen aunque IttySockets no entregue algún evento.
 
-## Correcciones anteriores conservadas
+## Caché
 
-- Eliminado `@apply` no compilable con Tailwind CDN.
-- Corregida la palabra `Hamburgesa` a `Hamburguesa`.
-- Se respeta el límite de rondas configurado.
-- Se evita doble envío de voto desde la UI.
-- Se refresca el estado antes de votar para reducir votos pisados.
-- Se limpia mejor la reconexión al salir de sala.
-- Se crea una nueva sala para revancha desde resultados.
+- `GameAPI` ahora usa `cache: 'no-store'`, cabeceras no-cache y cache buster en los `GET`.
+- Esto evita que `GET /rooms/{code}` devuelva un estado antiguo y obligue a refrescar la página manualmente.
 
-## Nota de seguridad
+## Flujo de juego
 
-El frontend ya no usa endpoints inventados, pero la seguridad completa contra manipulación del estado solo se puede cerrar en backend. Mientras exista `PATCH /rooms/{code}/state` aceptando parches completos desde cualquier cliente, un usuario avanzado podrá manipular la partida desde las herramientas del navegador.
+- Antes de comenzar partida o abrir votación, el admin refresca la sala para no operar con jugadores/estado antiguo.
+- Los cambios de estado también se guardan dentro de `game_state.status`, además del `status` principal, para tolerar backends que devuelvan el estado de una u otra forma.
+- Se normalizan respuestas envueltas tipo `{ room }` o `{ data: { room } }`.
+- Se normaliza el código de sala en mayúsculas para que no se corte la sincronización por diferencias de formato.
+
+## Otros arreglos conservados
+
+- Corrección de estilos `@apply` para Tailwind por CDN.
+- Control de rondas máximas.
+- Corrección de `Hamburgesa` a `Hamburguesa`.
+- Reconexión de socket más segura.

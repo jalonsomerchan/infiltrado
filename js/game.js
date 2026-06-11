@@ -10,7 +10,7 @@ const USER_STORAGE_KEY = 'infiltrado_user';
 const ROOM_STORAGE_KEY = 'infiltrado_room';
 const SOCKET_RECONNECT_BASE_MS = 1000;
 const SOCKET_RECONNECT_MAX_MS = 10000;
-const ROOM_SYNC_FALLBACK_MS = 2000;
+const ROOM_SYNC_FALLBACK_MS = 1000;
 const HOME_VIEW = 'inicio';
 
 let currentUser = JSON.parse(localStorage.getItem(USER_STORAGE_KEY)) || null;
@@ -22,6 +22,7 @@ let reconnectAttempts = 0;
 let reconnectTimer = null;
 let roomSyncTimer = null;
 let refreshPromise = null;
+let lastRenderedRoomSignature = '';
 let voteSubmitting = false;
 let audioContext = null;
 let timerInterval = null;
@@ -397,34 +398,52 @@ function buildLobbyPlayer(player, overrides = {}) {
 }
 
 
-function getRoomSignature(room) {
-  if (!room) return '';
-
-  return JSON.stringify({
-    status: room.status,
-    room_settings: room.room_settings || {},
-    game_state: room.game_state || {}
-  });
+function normalizeRoomCode(code) {
+  return code ? String(code).trim().toUpperCase() : code;
 }
 
 function normalizeRoomResponse(response) {
   if (!response) return null;
-  if (response.room) return response.room;
-  if (response.data?.room) return response.data.room;
+  if (response.room) return normalizeRoomResponse(response.room);
+  if (response.data?.room) return normalizeRoomResponse(response.data.room);
+  if (response.data && (response.data.room_code || response.data.game_state || response.data.status)) {
+    return normalizeRoomResponse(response.data);
+  }
   if (response.room_code || response.game_state || response.status) return response;
   return null;
 }
 
-function mergeRoomResponse(response, fallback = {}) {
-  const room = normalizeRoomResponse(response);
+function normalizeRoom(room, fallback = {}) {
+  const normalized = normalizeRoomResponse(room) || {};
+  const gameState = normalized.game_state || fallback.gameState || currentRoom?.game_state || {};
+  const roomSettings = normalized.room_settings || fallback.roomSettings || currentRoom?.room_settings || {};
+  const status = normalized.status || fallback.status || gameState.status || currentRoom?.status || 'waiting';
+  const roomCode = normalizeRoomCode(normalized.room_code || fallback.roomCode || currentRoom?.room_code || socketRoomCode);
 
-  currentRoom = {
+  return {
     ...currentRoom,
-    ...(room || {}),
-    room_settings: room?.room_settings || fallback.roomSettings || currentRoom?.room_settings || {},
-    game_state: room?.game_state || fallback.gameState || currentRoom?.game_state || {},
-    status: room?.status || fallback.status || currentRoom?.status
+    ...normalized,
+    room_code: roomCode,
+    status,
+    room_settings: roomSettings,
+    game_state: gameState
   };
+}
+
+function getRoomSignature(room) {
+  const normalized = normalizeRoom(room);
+  if (!normalized?.room_code && !normalized?.status) return '';
+
+  return JSON.stringify({
+    room_code: normalized.room_code,
+    status: normalized.status,
+    room_settings: normalized.room_settings || {},
+    game_state: normalized.game_state || {}
+  });
+}
+
+function mergeRoomResponse(response, fallback = {}) {
+  currentRoom = normalizeRoom(response, fallback);
 
   if (currentRoom.room_code) {
     persistRoom(currentRoom.room_code);
@@ -438,9 +457,18 @@ function mergeRoomResponse(response, fallback = {}) {
 async function patchRoomState({ gameState, status, roomSettings } = {}) {
   if (!currentRoom?.room_code) throw new Error('No hay sala activa');
 
-  const response = await api.updateRoomState(currentRoom.room_code, { gameState, status, roomSettings });
-  mergeRoomResponse(response, { gameState, status, roomSettings });
+  const nextGameState = gameState
+    ? { ...gameState, ...(status ? { status } : {}) }
+    : (status ? { ...(currentRoom.game_state || {}), status } : undefined);
+
+  const response = await api.updateRoomState(currentRoom.room_code, {
+    gameState: nextGameState,
+    status,
+    roomSettings
+  });
+  mergeRoomResponse(response, { gameState: nextGameState, status, roomSettings, roomCode: currentRoom.room_code });
   broadcastRoomState();
+  setTimeout(() => refreshRoom({ forceRender: true }), 250);
   return response;
 }
 
@@ -513,12 +541,12 @@ async function createRoom() {
       players: [buildCurrentPlayer({ isHost: true })]
     });
 
-    currentRoom = res;
-    persistRoom(res.room_code);
-    initSocket(res.room_code);
+    currentRoom = normalizeRoom(res, { status: 'waiting', gameState: { status: 'waiting', players: [buildCurrentPlayer({ isHost: true })] } });
+    persistRoom(currentRoom.room_code);
+    initSocket(currentRoom.room_code);
     renderLobby();
     feedback('success');
-    setRoute('sala', { roomCode: res.room_code });
+    setRoute('sala', { roomCode: currentRoom.room_code });
     showScreen('lobby');
   } catch (e) {
     console.error(e);
@@ -539,14 +567,19 @@ async function joinRoom(code, { silent = false, replaceRoute = false } = {}) {
     }
 
     const res = await api.joinRoom(code, currentUser.id);
-    currentRoom = { ...room, ...res, game_state: res.game_state || room.game_state };
-    persistRoom(code);
-    initSocket(code);
+    currentRoom = normalizeRoom(res, {
+      roomCode: code,
+      status: normalizeRoom(room, { roomCode: code }).status,
+      roomSettings: normalizeRoom(room, { roomCode: code }).room_settings,
+      gameState: normalizeRoom(room, { roomCode: code }).game_state
+    });
+    persistRoom(currentRoom.room_code || code);
+    initSocket(currentRoom.room_code || code);
     await ensureCurrentPlayerInRoom();
-    emitSocketEvent('player_joined', { room_code: code });
+    emitSocketEvent('player_joined', { room_code: currentRoom.room_code || code });
 
     feedback('success');
-    setRoute(routeForStatus(currentRoom.status), { roomCode: code, replace: replaceRoute });
+    setRoute(routeForStatus(currentRoom.status), { roomCode: currentRoom.room_code || code, replace: replaceRoute });
     updateUIFromState({ skipRoute: true });
   } catch (e) {
     console.error(e);
@@ -557,7 +590,7 @@ async function joinRoom(code, { silent = false, replaceRoute = false } = {}) {
   }
 }
 
-async function refreshRoom() {
+async function refreshRoom({ forceRender = false } = {}) {
   if (!currentRoom?.room_code) return;
   if (refreshPromise) return refreshPromise;
 
@@ -565,9 +598,13 @@ async function refreshRoom() {
     try {
       const previousSignature = getRoomSignature(currentRoom);
       const res = await api.getRoom(currentRoom.room_code);
-      const nextSignature = getRoomSignature(res);
-      currentRoom = res;
-      if (nextSignature !== previousSignature) updateUIFromState();
+      const nextRoom = normalizeRoom(res, { roomCode: currentRoom.room_code });
+      const nextSignature = getRoomSignature(nextRoom);
+      currentRoom = nextRoom;
+
+      if (forceRender || nextSignature !== previousSignature || nextSignature !== lastRenderedRoomSignature) {
+        updateUIFromState();
+      }
     } catch (e) {
       console.error('No se pudo refrescar la sala', e);
     } finally {
@@ -579,7 +616,7 @@ async function refreshRoom() {
 }
 
 function getSocketChannel(code) {
-  return `infiltrado:room:${String(code).trim().toUpperCase()}`;
+  return `infiltrado:room:${normalizeRoomCode(code)}`;
 }
 
 function initSocket(code) {
@@ -587,28 +624,31 @@ function initSocket(code) {
 
   const sessionId = socketSessionId + 1;
   socketSessionId = sessionId;
-  socketRoomCode = code;
-  startRoomSyncFallback(code, sessionId);
+  socketRoomCode = normalizeRoomCode(code);
+  startRoomSyncFallback(socketRoomCode, sessionId);
+  setTimeout(() => refreshRoom({ forceRender: true }), 0);
 
   try {
-    const connection = connect(getSocketChannel(code));
+    const connection = connect(getSocketChannel(socketRoomCode));
     socket = connection;
 
     Promise.resolve(connection).then(openedSocket => {
-      if (socketSessionId !== sessionId || socketRoomCode !== code) {
+      if (socketSessionId !== sessionId || socketRoomCode !== normalizeRoomCode(code)) {
         openedSocket?.close?.();
         return;
       }
 
       socket = openedSocket;
-      bindSocketEvent(openedSocket, 'player_joined', () => refreshRoom());
+      bindSocketEvent(openedSocket, 'player_joined', () => refreshRoom({ forceRender: true }));
+      bindSocketEvent(openedSocket, 'room_changed', () => refreshRoom({ forceRender: true }));
       bindSocketEvent(openedSocket, 'state_updated', (data) => handleRemoteStateUpdate(data, sessionId));
       bindSocketEvent(openedSocket, 'message', (message) => handleSocketMessage(message, sessionId));
+      bindSocketEvent(openedSocket, 'data', (message) => handleSocketMessage(message, sessionId));
       bindSocketEvent(openedSocket, 'open', () => {
         if (socketSessionId === sessionId) reconnectAttempts = 0;
       });
       bindSocketEvent(openedSocket, 'close', () => {
-        if (socketSessionId === sessionId && socketRoomCode === code && currentRoom?.room_code === code) reconnectSocket(code, sessionId);
+        if (socketSessionId === sessionId && socketRoomCode === String(code).trim().toUpperCase() && normalizeRoomCode(currentRoom?.room_code) === socketRoomCode) reconnectSocket(socketRoomCode, sessionId);
       });
       bindSocketEvent(openedSocket, 'error', (err) => {
         console.error('Socket error', err);
@@ -617,11 +657,11 @@ function initSocket(code) {
       reconnectAttempts = 0;
     }).catch(error => {
       console.error('No se pudo conectar con IttySockets', error);
-      if (socketSessionId === sessionId && socketRoomCode === code && currentRoom?.room_code === code) reconnectSocket(code, sessionId);
+      if (socketSessionId === sessionId && socketRoomCode === String(code).trim().toUpperCase() && normalizeRoomCode(currentRoom?.room_code) === socketRoomCode) reconnectSocket(socketRoomCode, sessionId);
     });
   } catch (error) {
     console.error('No se pudo conectar con IttySockets', error);
-    if (socketSessionId === sessionId && socketRoomCode === code && currentRoom?.room_code === code) reconnectSocket(code, sessionId);
+    if (socketSessionId === sessionId && socketRoomCode === String(code).trim().toUpperCase() && normalizeRoomCode(currentRoom?.room_code) === socketRoomCode) reconnectSocket(socketRoomCode, sessionId);
   }
 }
 
@@ -668,7 +708,9 @@ function handleSocketMessage(message, sessionId) {
     return;
   }
 
-  if (data.type === 'player_joined' || data.type === 'room_changed') refreshRoom();
+  if (data.type === 'player_joined' || data.type === 'room_changed' || data.type === 'state_changed') {
+    refreshRoom({ forceRender: true });
+  }
 }
 
 function handleRemoteStateUpdate(data, sessionId) {
@@ -676,20 +718,16 @@ function handleRemoteStateUpdate(data, sessionId) {
   const roomPayload = payload?.payload || payload;
 
   if (!currentRoom || socketSessionId !== sessionId) return;
-  if (roomPayload?.room_code && roomPayload.room_code !== currentRoom.room_code) return;
+  if (roomPayload?.room_code && normalizeRoomCode(roomPayload.room_code) !== normalizeRoomCode(currentRoom.room_code)) return;
 
   if (!roomPayload?.game_state && !roomPayload?.status && !roomPayload?.room_settings) {
     refreshRoom();
     return;
   }
 
-  currentRoom = {
-    ...currentRoom,
-    status: roomPayload.status || currentRoom.status,
-    room_settings: roomPayload.room_settings || currentRoom.room_settings,
-    game_state: roomPayload.game_state || currentRoom.game_state
-  };
+  currentRoom = normalizeRoom(roomPayload, { roomCode: currentRoom.room_code });
   updateUIFromState();
+  refreshRoom();
 }
 
 function emitSocketEvent(type, payload = {}) {
@@ -708,8 +746,11 @@ function emitSocketEvent(type, payload = {}) {
 
     const calls = [
       () => openSocket.send?.(serialized),
+      () => openSocket.send?.(message),
       () => openSocket.emit?.(type, message),
+      () => openSocket.emit?.('message', message),
       () => openSocket.publish?.(type, message),
+      () => openSocket.publish?.('message', message),
       () => openSocket.dispatchEvent?.(new MessageEvent('message', { data: serialized }))
     ];
 
@@ -736,7 +777,7 @@ function broadcastRoomState() {
 function startRoomSyncFallback(code, sessionId) {
   stopRoomSyncFallback();
   roomSyncTimer = setInterval(() => {
-    if (socketSessionId !== sessionId || currentRoom?.room_code !== code) return;
+    if (socketSessionId !== sessionId || normalizeRoomCode(currentRoom?.room_code) !== normalizeRoomCode(code)) return;
     refreshRoom();
   }, ROOM_SYNC_FALLBACK_MS);
 }
@@ -754,13 +795,15 @@ function reconnectSocket(code, sessionId) {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    if (socketSessionId === sessionId && currentRoom?.room_code === code) initSocket(code);
+    if (socketSessionId === sessionId && normalizeRoomCode(currentRoom?.room_code) === normalizeRoomCode(code)) initSocket(code);
   }, delay);
 }
 
 function updateUIFromState({ skipRoute = false } = {}) {
-  const status = currentRoom?.status;
+  const status = currentRoom?.status || currentRoom?.game_state?.status;
   if (!status) return;
+  currentRoom.status = status;
+  lastRenderedRoomSignature = getRoomSignature(currentRoom);
   if (!skipRoute) setRoute(routeForStatus(status), { roomCode: currentRoom.room_code });
 
   if (status === 'waiting') { renderLobby(); showScreen('lobby'); }
@@ -808,7 +851,7 @@ function renderGame() {
   }
 
   const catEl = document.getElementById('category-display');
-  const showCat = currentRoom.room_settings.showCategory;
+  const showCat = currentRoom.room_settings?.showCategory;
   if (showCat === 'all' || (showCat === 'civil' && !myData.isInfiltrado)) {
     catEl.innerText = `Categoría: ${state.category}`;
     catEl.classList.remove('hidden');
@@ -1033,6 +1076,7 @@ function resolveVotingState(state, votes) {
 
 async function startGame() {
   feedback('click');
+  await refreshRoom({ forceRender: false });
   const players = getPlayers();
 
   if (currentRoom.host_id != currentUser.id) {
@@ -1068,6 +1112,7 @@ async function startGame() {
 
 async function goToVoting() {
   feedback('click');
+  await refreshRoom({ forceRender: false });
 
   if (currentRoom.host_id != currentUser.id) {
     feedback('error');
@@ -1150,9 +1195,9 @@ async function createRematchRoom() {
       players
     });
 
-    currentRoom = res;
-    persistRoom(res.room_code);
-    initSocket(res.room_code);
+    currentRoom = normalizeRoom(res, { status: 'waiting', gameState: { status: 'waiting', players } });
+    persistRoom(currentRoom.room_code);
+    initSocket(currentRoom.room_code);
     feedback('success');
     setRoute('sala', { roomCode: res.room_code });
     updateUIFromState({ skipRoute: true });

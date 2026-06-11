@@ -10,18 +10,24 @@ export default class GameAPI {
    * Helper privado para peticiones HTTP
    */
   async _request(endpoint, method = 'GET', data = null) {
+    const isGet = method.toUpperCase() === 'GET';
+    const cacheBuster = isGet ? `${endpoint.includes('?') ? '&' : '?'}_=${Date.now()}` : '';
+    const url = `${this.baseURL}/${endpoint}${cacheBuster}`;
     const options = {
       method,
+      cache: 'no-store',
       headers: {
         'Content-Type': 'application/json',
-        'X-Requested-With': 'XMLHttpRequest'
+        'X-Requested-With': 'XMLHttpRequest',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache'
       }
     };
 
     if (data) options.body = JSON.stringify(data);
 
     try {
-      const response = await fetch(`${this.baseURL}/${endpoint}`, options);
+      const response = await fetch(url, options);
       const contentType = response.headers.get('content-type') || '';
       const result = contentType.includes('application/json')
         ? await response.json()
