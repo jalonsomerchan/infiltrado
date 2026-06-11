@@ -54,6 +54,8 @@
     .turn-alert > div { animation: turnOverlayPop .45s cubic-bezier(.2,1.5,.3,1) both, turnGlow 1s ease-in-out infinite; }
     .stats-panel-enter { animation: screenEnter .22s ease both; }
     .vote-reveal-row { animation: screenEnter .2s ease both; }
+    .qr-modal-card { animation: screenEnter .24s ease both; }
+    .qr-clickable { cursor: zoom-in; }
   </style>
 </head>
 <body class="h-full bg-gray-950 text-white font-game select-none">
@@ -163,6 +165,13 @@
                 <option value="open">No, mostrar votos</option>
               </select>
             </div>
+            <div class="flex justify-between items-center">
+              <span class="font-bold">Orden aleatorio</span>
+              <select id="config-random-order" class="bg-gray-800 rounded-lg p-2 outline-none">
+                <option value="fixed" selected>No, orden fijo</option>
+                <option value="random">Sí, tras cada votación</option>
+              </select>
+            </div>
             <div class="hidden justify-between items-center">
               <span class="font-bold">Rondas</span>
               <input id="config-rounds" type="number" value="3" min="1" max="10" class="w-16 bg-gray-800 rounded-lg p-2 text-center" />
@@ -190,7 +199,7 @@
 
       <div id="share-panel" class="w-full bg-gray-900/60 border border-gray-800 rounded-2xl p-4 space-y-4">
         <div class="grid grid-cols-[96px_1fr] gap-4 items-center">
-          <img id="room-qr" class="w-24 h-24 rounded-xl bg-white p-2" alt="QR para unirse a la sala" />
+          <img id="room-qr" class="qr-clickable w-24 h-24 rounded-xl bg-white p-2 transition-all hover:scale-105" alt="QR para unirse a la sala" />
           <div class="space-y-2 min-w-0">
             <p class="text-xs text-gray-400 leading-relaxed">Invita a otros jugadores con el enlace, WhatsApp o este QR.</p>
             <p id="room-link-display" class="text-[11px] text-gray-500 truncate"></p>
@@ -230,15 +239,15 @@
           <p id="current-turn-hint" class="text-xs text-gray-400 mt-2 font-bold">Describe sin decir la palabra.</p>
         </div>
 
+        <div id="turn-order-container" class="w-full bg-gray-900/50 p-4 rounded-2xl border border-gray-800">
+          <p class="text-[10px] uppercase text-gray-500 font-black mb-3 text-center">Orden de descripción</p>
+          <div id="turn-list" class="flex flex-wrap justify-center gap-2"></div>
+        </div>
+
         <div id="word-container" class="bg-gray-900 border-2 border-brand p-8 rounded-3xl w-full">
           <p id="category-display" class="text-brand text-xs font-black uppercase mb-1 hidden"></p>
           <p class="text-gray-400 text-sm uppercase tracking-widest mb-2 font-bold">Tu palabra es:</p>
           <h2 id="player-word" class="text-4xl font-black tracking-tight uppercase">??????</h2>
-        </div>
-
-        <div id="turn-order-container" class="w-full bg-gray-900/50 p-4 rounded-2xl border border-gray-800">
-          <p class="text-[10px] uppercase text-gray-500 font-black mb-3 text-center">Orden de descripción</p>
-          <div id="turn-list" class="flex flex-wrap justify-center gap-2"></div>
         </div>
       </div>
 
@@ -296,6 +305,20 @@
         <button id="btn-close-vote-stats" type="button" class="bg-gray-900 hover:bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-xs font-black uppercase">Cerrar</button>
       </div>
       <div id="vote-stats-content" class="space-y-4"></div>
+    </div>
+  </div>
+
+  <div id="qr-modal" class="hidden fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="qr-modal-card w-full max-w-sm rounded-[2rem] border border-gray-700 bg-gray-950 p-5 text-center shadow-2xl">
+      <div class="flex items-center justify-between gap-4 mb-4">
+        <div class="text-left">
+          <p class="text-[10px] uppercase tracking-[0.35em] text-gray-500 font-black">Compartir sala</p>
+          <h2 class="text-2xl font-black text-brand">Código QR</h2>
+        </div>
+        <button id="btn-close-qr-modal" type="button" class="bg-gray-900 hover:bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-xs font-black uppercase">Cerrar</button>
+      </div>
+      <img id="qr-modal-img" class="mx-auto w-72 h-72 rounded-3xl bg-white p-4" alt="QR grande para unirse a la sala" />
+      <p id="qr-modal-link" class="mt-4 text-[11px] text-gray-500 break-all"></p>
     </div>
   </div>
 

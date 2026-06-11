@@ -122,6 +122,11 @@ function setupEventListeners() {
   document.getElementById('vote-stats-modal').onclick = (event) => {
     if (event.target.id === 'vote-stats-modal') hideVoteStats();
   };
+  document.getElementById('room-qr').onclick = showQrModal;
+  document.getElementById('btn-close-qr-modal').onclick = hideQrModal;
+  document.getElementById('qr-modal').onclick = (event) => {
+    if (event.target.id === 'qr-modal') hideQrModal();
+  };
 }
 
 function setupHistoryNavigation() {
@@ -377,11 +382,18 @@ function getAlivePlayers(players = getPlayers()) {
 }
 
 function isCurrentUserHost() {
-  return String(currentRoom?.host_id ?? '') === String(currentUser?.id ?? '');
+  const currentId = String(currentUser?.id ?? '');
+  if (!currentId) return false;
+  if (String(currentRoom?.host_id ?? '') === currentId) return true;
+  return getPlayers().some(player => String(player.id) === currentId && player.isHost);
 }
 
 function isVoteSecret() {
   return currentRoom?.room_settings?.voteSecret !== false;
+}
+
+function isRandomOrderEnabled(settings = currentRoom?.room_settings) {
+  return settings?.randomOrder === true;
 }
 
 function hasDuplicatedName(players, username, ownId = currentUser?.id) {
@@ -546,6 +558,7 @@ function getSelectedRoomSettings() {
     infiltradoMode: mode === 'blind' ? 'none' : document.getElementById('config-infiltrado-word').value,
     showCategory: document.getElementById('config-show-category').value,
     voteSecret: document.getElementById('config-vote-secret').value === 'secret',
+    randomOrder: document.getElementById('config-random-order').value === 'random',
     maxRounds
   };
 }
@@ -855,9 +868,10 @@ function renderModeSummary() {
   const mode = settings.mode || 'classic';
   const timerText = mode === 'timed' ? ` · ${settings.timerSeconds || 30}s por ronda` : '';
   const voteText = settings.voteSecret === false ? ' · voto público' : ' · voto secreto';
+  const orderText = settings.randomOrder ? ' · orden aleatorio' : ' · orden fijo';
 
   modeSummary.classList.remove('hidden');
-  modeSummary.innerHTML = `<strong>${GAME_MODES[mode]?.label || 'Clásico'}</strong>${timerText}${voteText} · rondas hasta capturar al infiltrado<br><span class="text-gray-400">${getModeDescription(mode)}</span>`;
+  modeSummary.innerHTML = `<strong>${GAME_MODES[mode]?.label || 'Clásico'}</strong>${timerText}${voteText}${orderText} · rondas hasta capturar al infiltrado<br><span class="text-gray-400">${getModeDescription(mode)}</span>`;
 }
 
 function renderGame() {
@@ -929,6 +943,13 @@ function renderRoleStatus(myData) {
   if (!roleStatus || !myData) return;
 
   roleStatus.classList.remove('hidden', 'bg-blue-500/20', 'text-blue-200', 'border-blue-400/50', 'bg-red-500/20', 'text-red-200', 'border-red-400/50');
+
+  if ((currentRoom?.room_settings?.mode || currentRoom?.game_state?.mode) === 'blind') {
+    roleStatus.innerText = '';
+    roleStatus.classList.add('hidden');
+    return;
+  }
+
   roleStatus.classList.add('role-badge');
 
   if (myData.isInfiltrado) {
@@ -960,9 +981,12 @@ function renderCurrentTurn(state) {
     ? 'Te toca hablar. Describe sin decir tu palabra.'
     : `Escucha a ${currentTurn.player.name} y busca contradicciones.`;
 
-  document.getElementById('turn-info').innerText = isMe
-    ? '¡Te toca! Di algo relacionado sin revelar demasiado.'
-    : `Ahora habla ${currentTurn.player.name}.`;
+  const turnInfo = document.getElementById('turn-info');
+  if (turnInfo) {
+    turnInfo.innerText = isMe
+      ? '¡Te toca! Di algo relacionado sin revelar demasiado.'
+      : (isCurrentUserHost() ? 'Pulsa Continuar cuando termine este turno.' : 'Escucha y prepara tu siguiente pista.');
+  }
 
   if (isMe && !currentTurn.player.eliminated) {
     maybeShowTurnNotice(state, currentTurn);
@@ -1013,13 +1037,27 @@ function getOrderedPlayersForDisplay(state) {
   return ordered;
 }
 
-function buildTurnOrder(players) {
+function buildTurnOrder(players, { randomize = isRandomOrderEnabled() } = {}) {
   const alive = players.filter(player => !player.eliminated).map(player => player.id);
   const eliminated = players.filter(player => player.eliminated).map(player => player.id);
-  return [
-    ...alive.map(id => ({ id, sort: Math.random() })).sort((a, b) => a.sort - b.sort).map(item => item.id),
-    ...eliminated
-  ];
+  const orderedAlive = randomize
+    ? alive.map(id => ({ id, sort: Math.random() })).sort((a, b) => a.sort - b.sort).map(item => item.id)
+    : alive;
+
+  return [...orderedAlive, ...eliminated];
+}
+
+function buildNextRoundTurnOrder(players, previousOrder = [], { randomize = isRandomOrderEnabled() } = {}) {
+  if (randomize) return buildTurnOrder(players, { randomize: true });
+
+  const aliveIds = new Set(players.filter(player => !player.eliminated).map(player => player.id));
+  const kept = previousOrder.filter(id => aliveIds.has(id));
+  const missing = players
+    .filter(player => !player.eliminated && !kept.includes(player.id))
+    .map(player => player.id);
+  const eliminated = players.filter(player => player.eliminated).map(player => player.id);
+
+  return [...kept, ...missing, ...eliminated];
 }
 
 function maybeShowEliminationNotice(state, myData) {
@@ -1392,6 +1430,7 @@ function buildStartGamePayload(players, { avoidPrevious = false } = {}) {
       ...roundState,
       pairIndex,
       wordPair: pair,
+      turnOrder: buildTurnOrder(roundState.players, { randomize: isRandomOrderEnabled(currentRoom.room_settings) }),
       round: 1,
       currentTurnIndex: 0,
       votes: {},
@@ -1694,7 +1733,7 @@ async function continueAfterRound() {
         votes: {},
         round: nextRound,
         roundStartedAt: Date.now(),
-        turnOrder: buildTurnOrder(players),
+        turnOrder: buildNextRoundTurnOrder(players, state.turnOrder, { randomize: isRandomOrderEnabled() }),
         currentTurnIndex: 0
       }
     });
@@ -1806,6 +1845,23 @@ async function continueGame() {
     feedback('error');
     alert('No se pudo continuar la partida');
   }
+}
+
+function showQrModal() {
+  const modal = document.getElementById('qr-modal');
+  const modalImg = document.getElementById('qr-modal-img');
+  const modalLink = document.getElementById('qr-modal-link');
+  const qr = document.getElementById('room-qr');
+  if (!modal || !modalImg || !qr) return;
+
+  modalImg.src = qr.src;
+  if (modalLink) modalLink.innerText = getRoomUrl();
+  modal.classList.remove('hidden');
+  feedback('click');
+}
+
+function hideQrModal() {
+  document.getElementById('qr-modal')?.classList.add('hidden');
 }
 
 function shareRoom() {
