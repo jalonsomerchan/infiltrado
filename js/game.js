@@ -110,7 +110,7 @@ function setupEventListeners() {
   };
   document.getElementById('btn-start').onclick = startGame;
   document.getElementById('btn-show-voting').onclick = goToVoting;
-  document.getElementById('btn-back-lobby').onclick = backToLobby;
+  document.getElementById('btn-back-lobby').onclick = continueGame;
   document.getElementById('btn-share').onclick = shareRoom;
   document.getElementById('btn-whatsapp').onclick = shareRoomOnWhatsApp;
   document.getElementById('btn-copy-code').onclick = copyRoomCode;
@@ -860,7 +860,7 @@ function renderGame() {
   }
 
   document.getElementById('player-word').innerText = myData.eliminated ? 'ELIMINADO' : (myData.word || '???');
-  document.getElementById('game-status').innerText = `RONDA ${state.round || 1}/${Number(currentRoom.room_settings?.maxRounds) || 3}`;
+  document.getElementById('game-status').innerText = `PARTIDA ${state.matchNumber || 1} · RONDA ${state.round || 1}/${Number(currentRoom.room_settings?.maxRounds) || 3}`;
   document.getElementById('mode-status').innerText = state.modeLabel || getModeLabel(state.mode || 'classic');
   renderTimerStatus();
   animateElement(document.getElementById('word-container'), 'glow-pulse');
@@ -925,7 +925,7 @@ function renderVoting() {
   document.getElementById('word-container').classList.add('hidden');
   document.getElementById('voting-area').classList.remove('hidden');
   document.getElementById('btn-show-voting').classList.add('hidden');
-  document.getElementById('game-status').innerText = `VOTACIÓN ${currentRoom.game_state.round || 1}/${Number(currentRoom.room_settings?.maxRounds) || 3}`;
+  document.getElementById('game-status').innerText = `PARTIDA ${currentRoom.game_state.matchNumber || 1} · VOTACIÓN ${currentRoom.game_state.round || 1}/${Number(currentRoom.room_settings?.maxRounds) || 3}`;
   document.getElementById('mode-status').innerText = currentRoom.game_state.modeLabel || getModeLabel(currentRoom.game_state.mode || 'classic');
   document.getElementById('timer-status').classList.add('hidden');
 
@@ -962,12 +962,24 @@ function renderResults() {
   animateElement(document.getElementById('results-winner'), 'glow-pulse');
   feedback('reveal');
 
+  const continueButton = document.getElementById('btn-back-lobby');
+  const isHost = currentRoom.host_id == currentUser.id;
+  continueButton.innerText = 'Continuar Partida';
+  continueButton.classList.toggle('hidden', !isHost);
+
   const info = document.createElement('p');
   info.className = 'text-center text-gray-400 mb-4';
   info.innerText = infiltrados.length
     ? `Infiltrado${infiltrados.length > 1 ? 's' : ''}: ${infiltrados.map(p => `${p.name} (${p.word || 'NADA'})`).join(', ')}`
     : 'No se encontró al infiltrado.';
   resultsList.appendChild(info);
+
+  if (currentRoom.host_id != currentUser.id) {
+    const wait = document.createElement('p');
+    wait.className = 'text-center text-xs text-gray-500 mb-4 uppercase tracking-widest';
+    wait.innerText = 'Esperando a que el administrador continúe la partida';
+    resultsList.appendChild(wait);
+  }
 
   if (state.winnerReason) {
     const reason = document.createElement('p');
@@ -984,10 +996,15 @@ function renderResults() {
   });
 }
 
-function buildStartGamePayload(players) {
-  const pairIndex = Math.floor(Math.random() * palabras.length);
+function buildStartGamePayload(players, { avoidPrevious = false } = {}) {
+  const previousState = currentRoom.game_state || {};
+  const pairIndex = pickWordPairIndex(previousState, { avoidPrevious });
   const pair = palabras[pairIndex];
-  const roundState = createRoundState(players, currentRoom.room_settings, pair, palabras);
+  let roundState = createRoundState(players, currentRoom.room_settings, pair, palabras);
+
+  if (avoidPrevious) {
+    roundState = rerollInfiltradosIfNeeded(players, pair, roundState, previousState);
+  }
 
   return {
     minPlayers: MIN_PLAYERS,
@@ -995,8 +1012,10 @@ function buildStartGamePayload(players) {
     wordPair: pair,
     wordPairs: palabras,
     proposedState: {
-      ...currentRoom.game_state,
+      ...previousState,
       ...roundState,
+      pairIndex,
+      wordPair: pair,
       round: 1,
       votes: {},
       winner: null,
@@ -1005,6 +1024,75 @@ function buildStartGamePayload(players) {
   };
 }
 
+function pickWordPairIndex(previousState, { avoidPrevious = false } = {}) {
+  if (!palabras.length) return 0;
+  if (!avoidPrevious || palabras.length === 1) return Math.floor(Math.random() * palabras.length);
+
+  const previousPairIndex = Number.isInteger(previousState.pairIndex) ? previousState.pairIndex : -1;
+  const previousWords = new Set(
+    (previousState.players || [])
+      .map(player => String(player.word || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  let candidates = palabras
+    .map((pair, index) => ({ pair, index }))
+    .filter(({ pair, index }) => {
+      const sameIndex = index === previousPairIndex;
+      const sameWords = (pair.palabras || []).some(word => previousWords.has(String(word || '').trim().toLowerCase()));
+      return !sameIndex && !sameWords;
+    });
+
+  if (!candidates.length) {
+    candidates = palabras
+      .map((pair, index) => ({ pair, index }))
+      .filter(({ index }) => index !== previousPairIndex);
+  }
+
+  if (!candidates.length) candidates = palabras.map((pair, index) => ({ pair, index }));
+
+  return candidates[Math.floor(Math.random() * candidates.length)].index;
+}
+
+function rerollInfiltradosIfNeeded(players, pair, initialRoundState, previousState) {
+  const previousInfiltradoIds = getInfiltradoIds(previousState.players || []);
+  if (!previousInfiltradoIds.length || previousInfiltradoIds.length >= players.length) return initialRoundState;
+  if (!sameIdSet(previousInfiltradoIds, getInfiltradoIds(initialRoundState.players))) return initialRoundState;
+
+  let roundState = initialRoundState;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    roundState = createRoundState(players, currentRoom.room_settings, pair, palabras);
+    if (!sameIdSet(previousInfiltradoIds, getInfiltradoIds(roundState.players))) return roundState;
+  }
+
+  const firstAlternative = players.find(player => !previousInfiltradoIds.includes(player.id));
+  if (!firstAlternative) return roundState;
+
+  const forcedIds = new Set(previousInfiltradoIds.map((_, index) => {
+    if (index === 0) return firstAlternative.id;
+    return players.find(player => player.id !== firstAlternative.id && !previousInfiltradoIds.includes(player.id))?.id || previousInfiltradoIds[index];
+  }));
+
+  const forcedPlayers = roundState.players.map(player => {
+    const isInfiltrado = forcedIds.has(player.id);
+    const sourcePlayer = initialRoundState.players.find(candidate => candidate.isInfiltrado === isInfiltrado);
+    return {
+      ...player,
+      isInfiltrado,
+      word: sourcePlayer?.word || player.word
+    };
+  });
+
+  return { ...roundState, players: forcedPlayers };
+}
+
+function getInfiltradoIds(players) {
+  return players.filter(player => player.isInfiltrado).map(player => player.id).sort();
+}
+
+function sameIdSet(a, b) {
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
 
 function resolveVotingState(state, votes) {
   const voters = getAlivePlayers(state.players);
@@ -1101,7 +1189,10 @@ async function startGame() {
     const payload = buildStartGamePayload(players);
     await patchRoomState({
       status: 'playing',
-      gameState: payload.proposedState
+      gameState: {
+        ...payload.proposedState,
+        matchNumber: 1
+      }
     });
   } catch (error) {
     console.error(error);
@@ -1173,39 +1264,43 @@ async function castVote(targetId, button) {
   }
 }
 
-async function backToLobby() {
+async function continueGame() {
   feedback('click');
 
   if (currentRoom.host_id != currentUser.id) {
     feedback('error');
-    alert('Solo el host puede volver al lobby');
+    alert('Solo el host puede continuar la partida');
     return;
   }
 
-  await createRematchRoom();
-}
-
-async function createRematchRoom() {
-  const oldRoom = currentRoom;
-  const players = oldRoom.game_state.players.map(player => buildLobbyPlayer(player, { isHost: player.id == oldRoom.host_id }));
-
   try {
-    const res = await api.createRoom(GAME_ID, oldRoom.host_id, oldRoom.room_settings, {
-      status: 'waiting',
-      players
-    });
+    await refreshRoom({ forceRender: false });
+    const players = getPlayers().map(player => buildLobbyPlayer(player, { isHost: player.id == currentRoom.host_id }));
 
-    currentRoom = normalizeRoom(res, { status: 'waiting', gameState: { status: 'waiting', players } });
-    persistRoom(currentRoom.room_code);
-    initSocket(currentRoom.room_code);
-    feedback('success');
-    setRoute('sala', { roomCode: res.room_code });
-    updateUIFromState({ skipRoute: true });
-    alert(`Nueva sala creada: ${res.room_code}. Comparte el enlace con el grupo.`);
+    if (players.length < MIN_PLAYERS) {
+      feedback('error');
+      alert(`Se necesitan al menos ${MIN_PLAYERS} jugadores`);
+      return;
+    }
+
+    if ((currentRoom.room_settings?.mode || 'classic') === 'double' && players.length < 6) {
+      feedback('error');
+      alert('El modo doble infiltrado necesita al menos 6 jugadores');
+      return;
+    }
+
+    const payload = buildStartGamePayload(players, { avoidPrevious: true });
+    await patchRoomState({
+      status: 'playing',
+      gameState: {
+        ...payload.proposedState,
+        matchNumber: (Number(currentRoom.game_state?.matchNumber) || 1) + 1
+      }
+    });
   } catch (error) {
     console.error(error);
     feedback('error');
-    alert('No se pudo crear una nueva sala');
+    alert('No se pudo continuar la partida');
   }
 }
 

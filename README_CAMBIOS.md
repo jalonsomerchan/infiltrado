@@ -26,3 +26,12 @@
 - Control de rondas máximas.
 - Corrección de `Hamburgesa` a `Hamburguesa`.
 - Reconexión de socket más segura.
+
+
+## Cambio: partidas infinitas en la misma sala
+
+- El botón final ahora muestra `Continuar Partida`.
+- Al pulsarlo el administrador no crea una sala nueva.
+- Se reutiliza la misma sala y se genera una nueva partida con otro infiltrado, nuevas palabras y jugadores sin eliminar.
+- La puntuación acumulada de los jugadores se conserva entre partidas.
+- Los jugadores no administradores ven un mensaje de espera hasta que el administrador continúa.
