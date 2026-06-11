@@ -1,30 +1,25 @@
 # Cambios aplicados
 
-## Compatibilidad con el backend real
+## Sincronización de sala
 
-- Se usa el endpoint existente `PATCH /rooms/{code}/state`.
-- No se llama a el endpoint de acciones inexistente porque no existe en el backend actual.
-- Se evita cualquier URL una URL WebSocket propia de alon.one, porque ese endpoint tampoco existe.
+- Se mantiene el uso de `https://esm.sh/itty-sockets`.
+- Se elimina cualquier dependencia de endpoints WebSocket propios.
+- Se abre el canal IttySockets en cuanto el jugador entra en la sala, antes de modificar el estado compartido.
+- Al unirse un jugador se emite `player_joined` y, al cambiar el estado, se emiten `state_updated` y `room_changed`.
+- El wrapper de IttySockets ahora soporta varias formas de API: `send`, `emit`, `publish`, `on`, `addEventListener` y propiedades `onmessage`/`onclose`.
+- Se añade una reconciliación automática cada 2 segundos mientras se está dentro de una sala para evitar que la partida se quede congelada si el socket no entrega algún evento.
+- La reconciliación solo repinta la UI cuando el estado recibido cambia, para no reanimar la pantalla constantemente.
 
-## IttySockets
+## Correcciones anteriores conservadas
 
-- `js/game.js` mantiene la importación oficial del proyecto:
-  `import { connect } from 'https://esm.sh/itty-sockets';`
-- La conexión ahora usa un canal de sala de IttySockets:
-  `infiltrado:room:{CODIGO}`
-- Al actualizar el estado con la API REST, el cliente emite `state_updated` por IttySockets para que el resto de jugadores refresquen la UI sin polling.
-- El listener acepta tanto eventos nombrados (`state_updated`) como mensajes genéricos (`message`) para ser más tolerante con el formato que entregue `itty-sockets`.
+- Eliminado `@apply` no compilable con Tailwind CDN.
+- Corregida la palabra `Hamburgesa` a `Hamburguesa`.
+- Se respeta el límite de rondas configurado.
+- Se evita doble envío de voto desde la UI.
+- Se refresca el estado antes de votar para reducir votos pisados.
+- Se limpia mejor la reconexión al salir de sala.
+- Se crea una nueva sala para revancha desde resultados.
 
-## Correcciones de juego/UI
+## Nota de seguridad
 
-- Sustituido `@apply` por CSS real compatible con Tailwind vía CDN.
-- Corregido `Hamburgesa` → `Hamburguesa`.
-- Añadido bloqueo de doble voto desde UI.
-- Antes de votar se refresca la sala para reducir votos pisados.
-- Añadido control real de rondas máximas.
-- Al terminar y volver al lobby se crea una sala nueva con el mismo host, como indica `agents.md`.
-- Mejorada la reconexión del socket para no dejar temporizadores o sesiones antiguas activos.
-
-## Seguridad pendiente de backend
-
-El frontend ya no inventa endpoints, pero la vulnerabilidad de manipulación completa no se puede cerrar del todo solo con JS mientras el backend acepte parches completos de `game_state` desde cualquier cliente. La protección real requiere validar permisos y campos permitidos en `PATCH /rooms/{code}/state`, especialmente `players`, `votes`, `winner`, `status` y `room_settings`.
+El frontend ya no usa endpoints inventados, pero la seguridad completa contra manipulación del estado solo se puede cerrar en backend. Mientras exista `PATCH /rooms/{code}/state` aceptando parches completos desde cualquier cliente, un usuario avanzado podrá manipular la partida desde las herramientas del navegador.

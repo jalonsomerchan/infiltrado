@@ -10,6 +10,7 @@ const USER_STORAGE_KEY = 'infiltrado_user';
 const ROOM_STORAGE_KEY = 'infiltrado_room';
 const SOCKET_RECONNECT_BASE_MS = 1000;
 const SOCKET_RECONNECT_MAX_MS = 10000;
+const ROOM_SYNC_FALLBACK_MS = 2000;
 const HOME_VIEW = 'inicio';
 
 let currentUser = JSON.parse(localStorage.getItem(USER_STORAGE_KEY)) || null;
@@ -19,6 +20,8 @@ let socketRoomCode = null;
 let socketSessionId = 0;
 let reconnectAttempts = 0;
 let reconnectTimer = null;
+let roomSyncTimer = null;
+let refreshPromise = null;
 let voteSubmitting = false;
 let audioContext = null;
 let timerInterval = null;
@@ -276,6 +279,8 @@ function leaveRoomAndGoHome({ askConfirmation = false, skipRoute = false } = {})
 function closeSocket() {
   socketSessionId += 1;
   socketRoomCode = null;
+  stopRoomSyncFallback();
+
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -283,7 +288,15 @@ function closeSocket() {
 
   const socketToClose = socket;
   socket = null;
-  if (socketToClose?.close) socketToClose.close();
+
+  try {
+    if (socketToClose?.close) socketToClose.close();
+    else if (typeof socketToClose?.then === 'function') {
+      socketToClose.then(openSocket => openSocket?.close?.()).catch(() => {});
+    }
+  } catch (error) {
+    console.warn('No se pudo cerrar IttySockets correctamente', error);
+  }
 }
 
 function feedback(type = 'click') {
@@ -381,6 +394,17 @@ function buildLobbyPlayer(player, overrides = {}) {
     isHost: player.isHost || player.id == currentRoom?.host_id,
     ...overrides
   };
+}
+
+
+function getRoomSignature(room) {
+  if (!room) return '';
+
+  return JSON.stringify({
+    status: room.status,
+    room_settings: room.room_settings || {},
+    game_state: room.game_state || {}
+  });
 }
 
 function normalizeRoomResponse(response) {
@@ -516,10 +540,11 @@ async function joinRoom(code, { silent = false, replaceRoute = false } = {}) {
 
     const res = await api.joinRoom(code, currentUser.id);
     currentRoom = { ...room, ...res, game_state: res.game_state || room.game_state };
-    await ensureCurrentPlayerInRoom();
-
     persistRoom(code);
     initSocket(code);
+    await ensureCurrentPlayerInRoom();
+    emitSocketEvent('player_joined', { room_code: code });
+
     feedback('success');
     setRoute(routeForStatus(currentRoom.status), { roomCode: code, replace: replaceRoute });
     updateUIFromState({ skipRoute: true });
@@ -534,14 +559,23 @@ async function joinRoom(code, { silent = false, replaceRoute = false } = {}) {
 
 async function refreshRoom() {
   if (!currentRoom?.room_code) return;
+  if (refreshPromise) return refreshPromise;
 
-  try {
-    const res = await api.getRoom(currentRoom.room_code);
-    currentRoom = res;
-    updateUIFromState();
-  } catch (e) {
-    console.error('No se pudo refrescar la sala', e);
-  }
+  refreshPromise = (async () => {
+    try {
+      const previousSignature = getRoomSignature(currentRoom);
+      const res = await api.getRoom(currentRoom.room_code);
+      const nextSignature = getRoomSignature(res);
+      currentRoom = res;
+      if (nextSignature !== previousSignature) updateUIFromState();
+    } catch (e) {
+      console.error('No se pudo refrescar la sala', e);
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
 }
 
 function getSocketChannel(code) {
@@ -554,35 +588,66 @@ function initSocket(code) {
   const sessionId = socketSessionId + 1;
   socketSessionId = sessionId;
   socketRoomCode = code;
-  socket = connect(getSocketChannel(code));
+  startRoomSyncFallback(code, sessionId);
 
-  bindSocketEvent('player_joined', () => refreshRoom());
-  bindSocketEvent('state_updated', (data) => handleRemoteStateUpdate(data, sessionId));
-  bindSocketEvent('message', (message) => handleSocketMessage(message, sessionId));
-  bindSocketEvent('open', () => {
-    if (socketSessionId === sessionId) reconnectAttempts = 0;
-  });
-  bindSocketEvent('close', () => {
+  try {
+    const connection = connect(getSocketChannel(code));
+    socket = connection;
+
+    Promise.resolve(connection).then(openedSocket => {
+      if (socketSessionId !== sessionId || socketRoomCode !== code) {
+        openedSocket?.close?.();
+        return;
+      }
+
+      socket = openedSocket;
+      bindSocketEvent(openedSocket, 'player_joined', () => refreshRoom());
+      bindSocketEvent(openedSocket, 'state_updated', (data) => handleRemoteStateUpdate(data, sessionId));
+      bindSocketEvent(openedSocket, 'message', (message) => handleSocketMessage(message, sessionId));
+      bindSocketEvent(openedSocket, 'open', () => {
+        if (socketSessionId === sessionId) reconnectAttempts = 0;
+      });
+      bindSocketEvent(openedSocket, 'close', () => {
+        if (socketSessionId === sessionId && socketRoomCode === code && currentRoom?.room_code === code) reconnectSocket(code, sessionId);
+      });
+      bindSocketEvent(openedSocket, 'error', (err) => {
+        console.error('Socket error', err);
+      });
+
+      reconnectAttempts = 0;
+    }).catch(error => {
+      console.error('No se pudo conectar con IttySockets', error);
+      if (socketSessionId === sessionId && socketRoomCode === code && currentRoom?.room_code === code) reconnectSocket(code, sessionId);
+    });
+  } catch (error) {
+    console.error('No se pudo conectar con IttySockets', error);
     if (socketSessionId === sessionId && socketRoomCode === code && currentRoom?.room_code === code) reconnectSocket(code, sessionId);
-  });
-  bindSocketEvent('error', (err) => {
-    console.error('Socket error', err);
-  });
+  }
 }
 
-function bindSocketEvent(eventName, handler) {
-  if (typeof socket?.on === 'function') {
-    socket.on(eventName, handler);
-    return;
+function bindSocketEvent(targetSocket, eventName, handler) {
+  if (!targetSocket) return;
+
+  if (typeof targetSocket.on === 'function') {
+    targetSocket.on(eventName, handler);
   }
 
-  if (typeof socket?.addEventListener === 'function') {
-    socket.addEventListener(eventName, handler);
+  if (typeof targetSocket.addEventListener === 'function') {
+    targetSocket.addEventListener(eventName, handler);
+  }
+
+  const propertyName = `on${eventName}`;
+  if (propertyName in targetSocket) {
+    const previousHandler = targetSocket[propertyName];
+    targetSocket[propertyName] = (event) => {
+      if (typeof previousHandler === 'function') previousHandler.call(targetSocket, event);
+      handler(event);
+    };
   }
 }
 
 function normalizeSocketMessage(message) {
-  const raw = message?.data ?? message;
+  const raw = message?.detail ?? message?.data ?? message;
   if (typeof raw !== 'string') return raw;
 
   try {
@@ -594,15 +659,16 @@ function normalizeSocketMessage(message) {
 
 function handleSocketMessage(message, sessionId) {
   const data = normalizeSocketMessage(message);
-  if (!data || data.sender_id === currentUser?.id) return;
+  if (!data) return;
   if (data.room_code && data.room_code !== socketRoomCode) return;
+  if (data.sender_id === currentUser?.id) return;
 
   if (data.type === 'state_updated') {
     handleRemoteStateUpdate(data.payload || data, sessionId);
     return;
   }
 
-  if (data.type === 'player_joined') refreshRoom();
+  if (data.type === 'player_joined' || data.type === 'room_changed') refreshRoom();
 }
 
 function handleRemoteStateUpdate(data, sessionId) {
@@ -635,18 +701,24 @@ function emitSocketEvent(type, payload = {}) {
     sender_id: currentUser?.id,
     payload
   };
+  const serialized = JSON.stringify(message);
 
-  try {
-    if (typeof socket.emit === 'function') {
-      socket.emit(type, message);
-    } else if (typeof socket.publish === 'function') {
-      socket.publish(type, message);
-    } else if (typeof socket.send === 'function') {
-      socket.send(JSON.stringify(message));
-    }
-  } catch (error) {
+  Promise.resolve(socket).then(openSocket => {
+    if (!openSocket || socketRoomCode !== message.room_code) return;
+
+    const calls = [
+      () => openSocket.send?.(serialized),
+      () => openSocket.emit?.(type, message),
+      () => openSocket.publish?.(type, message),
+      () => openSocket.dispatchEvent?.(new MessageEvent('message', { data: serialized }))
+    ];
+
+    calls.forEach(call => {
+      try { call(); } catch {}
+    });
+  }).catch(error => {
     console.error('No se pudo emitir por IttySockets', error);
-  }
+  });
 }
 
 function broadcastRoomState() {
@@ -658,6 +730,21 @@ function broadcastRoomState() {
     room_settings: currentRoom.room_settings,
     game_state: currentRoom.game_state
   });
+  emitSocketEvent('room_changed', { room_code: currentRoom.room_code });
+}
+
+function startRoomSyncFallback(code, sessionId) {
+  stopRoomSyncFallback();
+  roomSyncTimer = setInterval(() => {
+    if (socketSessionId !== sessionId || currentRoom?.room_code !== code) return;
+    refreshRoom();
+  }, ROOM_SYNC_FALLBACK_MS);
+}
+
+function stopRoomSyncFallback() {
+  if (!roomSyncTimer) return;
+  clearInterval(roomSyncTimer);
+  roomSyncTimer = null;
 }
 
 function reconnectSocket(code, sessionId) {
