@@ -7,24 +7,32 @@ export default class GameAPI {
   }
 
   /**
-   * Helper privado para peticiones HTTP
+   * Helper privado para peticiones HTTP.
+   *
+   * IMPORTANTE:
+   * No añadir headers anti-cache personalizados aquí.
+   * Headers como X-Requested-With, Cache-Control o Pragma disparan preflight CORS
+   * y rompen POST/PATCH si la API no responde OPTIONS.
    */
   async _request(endpoint, method = 'GET', data = null) {
-    const isGet = method.toUpperCase() === 'GET';
+    const normalizedMethod = method.toUpperCase();
+    const isGet = normalizedMethod === 'GET';
     const cacheBuster = isGet ? `${endpoint.includes('?') ? '&' : '?'}_=${Date.now()}` : '';
     const url = `${this.baseURL}/${endpoint}${cacheBuster}`;
     const options = {
-      method,
-      cache: 'no-store',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        Pragma: 'no-cache'
-      }
+      method: normalizedMethod
     };
 
-    if (data) options.body = JSON.stringify(data);
+    if (isGet) {
+      options.cache = 'no-store';
+    }
+
+    if (data !== null && data !== undefined) {
+      options.headers = {
+        'Content-Type': 'application/json'
+      };
+      options.body = JSON.stringify(data);
+    }
 
     try {
       const response = await fetch(url, options);
@@ -39,7 +47,7 @@ export default class GameAPI {
 
       return result;
     } catch (error) {
-      console.error(`API Error (${method} ${endpoint}):`, error);
+      console.error(`API Error (${normalizedMethod} ${endpoint}):`, error);
       throw error;
     }
   }
